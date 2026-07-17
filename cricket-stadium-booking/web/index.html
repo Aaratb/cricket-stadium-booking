@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cricket Stadium Booking</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; }
+  #match-name { color: #555; }
+  .section { margin-bottom: 1rem; }
+  .section h3 { margin: 0.3rem 0; font-size: 0.9rem; color: #333; }
+  .seats { display: flex; flex-wrap: wrap; gap: 4px; }
+  .seat { width: 36px; height: 28px; font-size: 10px; border: 1px solid #999; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .seat.available { background: #d4f4d4; }
+  .seat.held-mine { background: #ffe9a8; }
+  .seat.held-other, .seat.confirmed { background: #f4a8a8; cursor: not-allowed; }
+  .seat.selected { outline: 3px solid #333; }
+  .seat:focus-visible { outline: 3px solid #2563eb; outline-offset: 1px; }
+  #panel { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; margin-top: 1rem; }
+  button { padding: 0.4rem 0.8rem; margin-right: 0.5rem; }
+  #status { color: #a00; }
+</style>
+</head>
+<body>
+  <h1>Cricket Stadium Booking</h1>
+  <div id="match-name">Match: <span id="match-id-label"></span></div>
+
+  <div id="panel">
+    <label for="buyer-id">Your buyer ID: <input id="buyer-id" value="fan@example.com"></label>
+    <div id="status" role="status" aria-live="polite"></div>
+  </div>
+
+  <div id="seat-grid"></div>
+
+  <div id="panel">
+    <div id="selection">Selected: none</div>
+    <button id="btn-hold" disabled>Hold Seat</button>
+    <div id="hold-panel" style="display:none">
+      <div role="status" aria-live="polite">Active hold: <span id="hold-seat"></span> expires in <span id="countdown"></span></div>
+      <button id="btn-confirm">Confirm Booking</button>
+      <button id="btn-release">Release Hold</button>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
