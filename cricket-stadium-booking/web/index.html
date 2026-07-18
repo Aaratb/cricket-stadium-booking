@@ -30,6 +30,7 @@
 
   body {
     margin: 0;
+    padding-top: 76px;
     min-width: 320px;
     min-height: 100vh;
     color: var(--text);
@@ -52,9 +53,11 @@
     border-bottom: 1px solid var(--line);
     background: rgba(5, 15, 12, 0.78);
     backdrop-filter: blur(18px);
-    position: sticky;
-    top: 0;
+    position: fixed;
+    inset: 0 0 auto;
     z-index: 20;
+    contain: layout paint;
+    transform: translateZ(0);
   }
 
   .brand { display: flex; align-items: center; gap: 0.8rem; }
@@ -203,7 +206,6 @@
     overflow: auto;
     padding: clamp(0.8rem, 2vw, 1.5rem);
     scrollbar-color: rgba(80, 227, 164, 0.28) transparent;
-    perspective: 1400px;
   }
   .scroll-hint { display: none; }
 
@@ -212,6 +214,7 @@
     min-width: 1080px;
     aspect-ratio: 1.68;
     position: relative;
+    contain: layout paint;
     isolation: isolate;
     overflow: hidden;
     border-radius: 28px;
@@ -385,6 +388,8 @@
   .seat {
     --chair-color: #3fc791;
     --chair-dark: #166d4d;
+    --chair-back-shadow: 0 3px 1px rgba(0,0,0,.42);
+    --chair-base-shadow: 0 4px 1px rgba(0,0,0,.48);
     --seat-scale: 1;
     appearance: none;
     position: absolute;
@@ -402,7 +407,6 @@
     font-size: 0;
     cursor: pointer;
     transform: translate(-50%, -50%) rotate(var(--seat-angle, 0deg)) scale(var(--seat-scale));
-    filter: drop-shadow(0 2px 1px rgba(0,0,0,.62));
     transition: transform 130ms ease, filter 130ms ease;
   }
   .seat::before {
@@ -415,7 +419,7 @@
     border: 1px solid rgba(255,255,255,.34);
     border-radius: 4px 4px 2px 2px;
     background: linear-gradient(145deg, color-mix(in srgb, var(--chair-color), white 18%), var(--chair-color) 48%, var(--chair-dark));
-    box-shadow: inset 0 1px rgba(255,255,255,.32), 0 2px 0 var(--chair-dark);
+    box-shadow: inset 0 1px rgba(255,255,255,.32), 0 2px 0 var(--chair-dark), var(--chair-back-shadow);
   }
   .seat::after {
     content: "";
@@ -427,7 +431,7 @@
     border: 1px solid rgba(255,255,255,.23);
     border-radius: 2px 2px 5px 5px;
     background: linear-gradient(var(--chair-color), var(--chair-dark));
-    box-shadow: 0 3px 0 rgba(1,5,3,.65);
+    box-shadow: 0 3px 0 rgba(1,5,3,.65), var(--chair-base-shadow);
     transform: perspective(25px) rotateX(40deg);
     transform-origin: top;
   }
@@ -461,6 +465,12 @@
   .seat[data-bowl-row="1"] .seat-number {
     width: 15px;
     font-size: 4.8px;
+  }
+  .seat.available:hover,
+  .seat.confirmed.owned-confirmed,
+  .seat.selected {
+    --chair-back-shadow: 0 0 transparent;
+    --chair-base-shadow: 0 0 transparent;
   }
   .seat.available:hover { --seat-scale: 1.36; z-index: 20; filter: drop-shadow(0 5px 4px rgba(0,0,0,.72)) brightness(1.15); }
   .seat.held-mine { --chair-color: var(--held-mine); --chair-dark: #9c7015; }
@@ -764,6 +774,7 @@
   }
 
   @media (max-width: 700px) {
+    body { padding-top: 64px; }
     .topbar { height: 64px; padding: 0 1rem; }
     .brand-subtitle, .match-chip span:last-child { display: none; }
     .match-chip { padding: 0.5rem; }
@@ -925,9 +936,9 @@
             <button class="primary-button" id="btn-hold" disabled>Hold selected seat</button>
 
             <div class="hold-panel" id="hold-panel" hidden>
-              <div class="hold-meta" role="status" aria-live="polite">
-                <span>Active hold<strong id="hold-seat"></strong></span>
-                <span class="timer" id="countdown">00:00</span>
+              <div class="hold-meta">
+                <span role="status" aria-live="polite">Active hold<strong id="hold-seat"></strong></span>
+                <span class="timer" id="countdown" aria-live="off">00:00</span>
               </div>
               <div class="hold-actions">
                 <button class="secondary-button" id="btn-confirm">Confirm</button>

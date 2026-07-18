@@ -2,6 +2,9 @@ package booking
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,6 +21,7 @@ const seatCacheTTL = 1 * time.Second
 
 type seatCacheEntry struct {
 	seats     []Seat
+	version   string
 	expiresAt time.Time
 }
 
@@ -37,20 +41,53 @@ func newSeatCache(ttl time.Duration) *seatCache {
 	return &seatCache{ttl: ttl, now: time.Now, items: make(map[string]seatCacheEntry)}
 }
 
-func (c *seatCache) get(matchID string) ([]Seat, bool) {
+func (c *seatCache) get(matchID string) (seatCacheEntry, bool) {
 	c.mu.RLock()
 	e, ok := c.items[matchID]
 	c.mu.RUnlock()
 	if !ok || c.now().After(e.expiresAt) {
-		return nil, false
+		return seatCacheEntry{}, false
 	}
-	return e.seats, true
+	return e, true
 }
 
-func (c *seatCache) put(matchID string, seats []Seat) {
+func (c *seatCache) put(matchID string, seats []Seat) seatCacheEntry {
+	entry := seatCacheEntry{
+		seats:     seats,
+		version:   seatSnapshotVersion(matchID, seats),
+		expiresAt: c.now().Add(c.ttl),
+	}
 	c.mu.Lock()
-	c.items[matchID] = seatCacheEntry{seats: seats, expiresAt: c.now().Add(c.ttl)}
+	c.items[matchID] = entry
 	c.mu.Unlock()
+	return entry
+}
+
+// seatSnapshotVersion is an opaque, deterministic validator for the complete
+// public seat representation. It is computed once when a cache entry is
+// populated and then shared by every waiter, so conditional polling does not
+// hash all seats independently for every request. Length-prefixing strings
+// prevents ambiguous concatenations from producing the same input stream.
+func seatSnapshotVersion(matchID string, seats []Seat) string {
+	h := sha256.New()
+	writeVersionString := func(value string) {
+		_, _ = h.Write([]byte(strconv.Itoa(len(value))))
+		_, _ = h.Write([]byte{':'})
+		_, _ = h.Write([]byte(value))
+	}
+
+	writeVersionString(matchID)
+	for _, seat := range seats {
+		writeVersionString(seat.SeatID)
+		writeVersionString(seat.Section)
+		writeVersionString(seat.Status)
+		if seat.HoldExpiresAt == nil {
+			writeVersionString("")
+			continue
+		}
+		writeVersionString(seat.HoldExpiresAt.UTC().Format(time.RFC3339Nano))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // invalidate drops any cached seat map for matchID, so the next ListSeats
@@ -72,30 +109,29 @@ func (c *seatCache) invalidate(matchID string) {
 // runs, and (2) a waiter that gives up merely stops waiting — the shared
 // flight keeps running (the loader carries its own detached context, see
 // ListSeats) and its result still lands in the cache for the next reader.
-func (c *seatCache) load(ctx context.Context, matchID string, loader func() ([]Seat, error)) ([]Seat, error) {
-	if seats, ok := c.get(matchID); ok {
-		return seats, nil
+func (c *seatCache) load(ctx context.Context, matchID string, loader func() ([]Seat, error)) (seatCacheEntry, error) {
+	if entry, ok := c.get(matchID); ok {
+		return entry, nil
 	}
 	ch := c.group.DoChan(matchID, func() (any, error) {
 		// Re-check inside the flight: a concurrent caller may have populated
 		// the cache while we were queued behind it.
-		if seats, ok := c.get(matchID); ok {
-			return seats, nil
+		if entry, ok := c.get(matchID); ok {
+			return entry, nil
 		}
 		seats, err := loader()
 		if err != nil {
 			return nil, err
 		}
-		c.put(matchID, seats)
-		return seats, nil
+		return c.put(matchID, seats), nil
 	})
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return seatCacheEntry{}, ctx.Err()
 	case res := <-ch:
 		if res.Err != nil {
-			return nil, res.Err
+			return seatCacheEntry{}, res.Err
 		}
-		return res.Val.([]Seat), nil
+		return res.Val.(seatCacheEntry), nil
 	}
 }

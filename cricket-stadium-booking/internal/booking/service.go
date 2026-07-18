@@ -136,10 +136,19 @@ func (svc *Service) Ping(ctx context.Context) error {
 }
 
 func (svc *Service) ListSeats(ctx context.Context, matchID string) ([]Seat, error) {
+	seats, _, err := svc.ListSeatsVersioned(ctx, matchID)
+	return seats, err
+}
+
+// ListSeatsVersioned returns the current seat map together with a stable,
+// opaque version for conditional HTTP requests. The version is stored beside
+// the existing cached seat slice, so large polling cohorts reuse both the
+// database result and its validator.
+func (svc *Service) ListSeatsVersioned(ctx context.Context, matchID string) ([]Seat, string, error) {
 	ctx, cancel := svc.withDeadline(ctx)
 	defer cancel()
 
-	return svc.seatCache.load(ctx, matchID, func() ([]Seat, error) {
+	entry, err := svc.seatCache.load(ctx, matchID, func() ([]Seat, error) {
 		// This query is shared by every concurrent caller collapsed into the
 		// singleflight flight, so it must not run on any single request's
 		// context — one client disconnecting (or arriving with a nearly-spent
@@ -159,6 +168,10 @@ func (svc *Service) ListSeats(ctx context.Context, matchID string) ([]Seat, erro
 		}
 		return out, nil
 	})
+	if err != nil {
+		return nil, "", err
+	}
+	return entry.seats, entry.version, nil
 }
 
 func isRetryable(err error) bool {

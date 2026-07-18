@@ -81,7 +81,34 @@ func TestSeatCache_WaiterHonorsOwnDeadline(t *testing.T) {
 	if err := <-leaderResult; err != nil {
 		t.Fatalf("leader err = %v, want success", err)
 	}
-	if seats, ok := c.get("m1"); !ok || len(seats) != 1 {
+	if entry, ok := c.get("m1"); !ok || len(entry.seats) != 1 {
 		t.Errorf("cache not populated by completed flight (ok=%v)", ok)
+	}
+}
+
+func TestSeatSnapshotVersion_StableAndSensitiveToRepresentation(t *testing.T) {
+	expiresAt := time.Date(2026, time.July, 18, 12, 30, 0, 123, time.UTC)
+	seats := []Seat{{
+		SeatID:        "A1",
+		Section:       "NORTH",
+		Status:        "held",
+		HoldExpiresAt: &expiresAt,
+	}}
+
+	version := seatSnapshotVersion("m1", seats)
+	if version == "" {
+		t.Fatal("version is empty")
+	}
+	if again := seatSnapshotVersion("m1", seats); again != version {
+		t.Fatalf("same snapshot version = %q, want %q", again, version)
+	}
+
+	changed := append([]Seat(nil), seats...)
+	changed[0].Status = "confirmed"
+	if got := seatSnapshotVersion("m1", changed); got == version {
+		t.Fatal("status change did not change snapshot version")
+	}
+	if got := seatSnapshotVersion("m2", seats); got == version {
+		t.Fatal("match change did not change snapshot version")
 	}
 }

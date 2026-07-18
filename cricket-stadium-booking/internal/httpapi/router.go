@@ -28,5 +28,5 @@ func NewServer(service *booking.Service, rateLimitEnabled bool) http.Handler {
 	if rateLimitEnabled {
 		handler = rateLimitMiddleware(handler)
 	}
-	return recoverMiddleware(handler)
+	return gzipMiddleware(recoverMiddleware(handler))
 }

@@ -1,6 +1,9 @@
 package httpapi
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+)
 
 type seatsResponse struct {
 	MatchID string      `json:"match_id"`
@@ -17,9 +20,21 @@ type seatEntry struct {
 func (s *Server) handleListSeats(w http.ResponseWriter, r *http.Request) {
 	matchID := r.PathValue("matchId")
 
-	seats, err := s.service.ListSeats(r.Context(), matchID)
+	seats, version, err := s.service.ListSeatsVersioned(r.Context(), matchID)
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+
+	// Browsers revalidate this public snapshot on each application-driven
+	// poll. An unchanged map becomes a header-only 304, while cache
+	// invalidation after every mutation guarantees immediate read-your-writes.
+	etag := fmt.Sprintf(`W/"seats-%s"`, version)
+	w.Header().Set("Cache-Control", "public, no-cache")
+	w.Header().Set("ETag", etag)
+	addVary(w.Header(), "Accept-Encoding")
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 

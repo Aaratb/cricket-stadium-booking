@@ -10,7 +10,59 @@ const TIER_ROW_COUNTS = {
   lower: [16, 21, 23],
   upper: [19, 21],
 };
-document.getElementById('match-id-label').textContent = MATCH_ID;
+
+// The script is loaded at the end of <body>, so cache stable DOM references
+// once instead of resolving the same IDs on every interaction and poll.
+const dom = {
+  matchIdLabel: document.getElementById('match-id-label'),
+  buyerInput: document.getElementById('buyer-id'),
+  status: document.getElementById('status'),
+  bookingsStatus: document.getElementById('bookings-status'),
+  refreshSeatsButton: document.getElementById('btn-refresh'),
+  refreshBookingsButton: document.getElementById('btn-refresh-bookings'),
+  holdButton: document.getElementById('btn-hold'),
+  confirmButton: document.getElementById('btn-confirm'),
+  releaseButton: document.getElementById('btn-release'),
+  lastUpdated: document.getElementById('last-updated'),
+  availableCount: document.getElementById('available-count'),
+  selection: document.getElementById('selection'),
+  selectionHint: document.getElementById('selection-hint'),
+  holdPanel: document.getElementById('hold-panel'),
+  holdSeat: document.getElementById('hold-seat'),
+  countdown: document.getElementById('countdown'),
+  stadiumScroller: document.querySelector('.stadium-scroller'),
+  bookingsList: document.getElementById('bookings-list'),
+  bookingsEmpty: document.getElementById('bookings-empty'),
+  bookingsBuyer: document.getElementById('bookings-buyer'),
+  bookingsCount: document.getElementById('bookings-count'),
+  refundTracker: document.getElementById('refund-tracker'),
+  refundTrackerList: document.getElementById('refund-tracker-list'),
+  seatMapTab: document.getElementById('tab-seat-map'),
+  bookingsTab: document.getElementById('tab-my-bookings'),
+  seatMapView: document.getElementById('seat-map-view'),
+  bookingsView: document.getElementById('my-bookings-view'),
+  changeBuyerButton: document.getElementById('btn-change-buyer'),
+  cancelDialog: document.getElementById('cancel-dialog'),
+  cancelDialogSeat: document.getElementById('cancel-dialog-seat'),
+  cancelDismissButton: document.getElementById('btn-cancel-dismiss'),
+  cancelConfirmButton: document.getElementById('btn-cancel-confirm'),
+};
+dom.seatContainers = new Map();
+dom.sectionCounts = new Map();
+for (const section of STADIUM_SECTIONS) {
+  dom.sectionCounts.set(section, document.getElementById(`count-${section}`));
+  for (const tier of Object.keys(TIER_ROW_COUNTS)) {
+    dom.seatContainers.set(`${section}-${tier}`, document.getElementById(`seats-${section}-${tier}`));
+  }
+}
+dom.matchIdLabel.textContent = MATCH_ID;
+
+const lastUpdatedFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit', minute: '2-digit', second: '2-digit',
+});
+const bookingTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium', timeStyle: 'short',
+});
 
 let selectedSeatId = null;
 let activeHold = null; // { hold_id, seat_id, hold_expires_at }
@@ -20,6 +72,7 @@ let refreshTimer = null;
 let mutationInFlight = false;
 let stadiumCentered = false;
 let bookingRequestGeneration = 0;
+let bookingRequest = null;
 let buyerRefreshTimer = null;
 let refundStatusTimer = null;
 let cancelTarget = null;
@@ -27,19 +80,45 @@ let knownBookings = [];
 let knownBookingsBuyer = null;
 let confirmedBookingBySeatId = new Map();
 const seatElements = new Map();
+const seatNumberCache = new Map();
+const seatPlacementCache = new Map();
+const bookingById = new Map();
+const bookingCards = new Map();
+const cancelBookingButtons = new Set();
+const refundTrackerItems = new Map();
+
+function setText(element, value) {
+  const text = String(value);
+  if (element.textContent !== text) element.textContent = text;
+}
+
+function setDisabled(element, disabled) {
+  if (element.disabled !== disabled) element.disabled = disabled;
+}
+
+function setHidden(element, hidden) {
+  if (element.hidden !== hidden) element.hidden = hidden;
+}
+
+function setAriaBusy(element, busy) {
+  const value = String(busy);
+  if (element.getAttribute('aria-busy') !== value) element.setAttribute('aria-busy', value);
+}
+
+function setAttributeIfChanged(element, name, value) {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
 
 function buyerId() {
-  return document.getElementById('buyer-id').value.trim() || 'anon@example.com';
+  return dom.buyerInput.value.trim() || 'anon@example.com';
 }
 
 function setStatus(msg, tone = 'error') {
-  for (const status of [
-    document.getElementById('status'),
-    document.getElementById('bookings-status'),
-  ]) {
+  for (const status of [dom.status, dom.bookingsStatus]) {
     if (!status) continue;
-    status.textContent = msg || '';
-    status.dataset.tone = msg ? tone : '';
+    setText(status, msg || '');
+    const nextTone = msg ? tone : '';
+    if (status.dataset.tone !== nextTone) status.dataset.tone = nextTone;
   }
 }
 
@@ -48,21 +127,20 @@ async function refreshSeats() {
   // must not create the overlapping GETs that fixed-interval polling did.
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
-    const refreshButton = document.getElementById('btn-refresh');
-    refreshButton.setAttribute('aria-busy', 'true');
+    setAriaBusy(dom.refreshSeatsButton, true);
     try {
+      // Use the browser's normal HTTP cache semantics. When the server sends
+      // validators, fetch will revalidate and reuse the cached body without
+      // application code maintaining a second ETag cache.
       const res = await fetch(`/matches/${MATCH_ID}/seats`);
       if (!res.ok) throw new Error(`server returned ${res.status}`);
       const data = await res.json();
       renderSeats(data.seats || []);
-      document.getElementById('last-updated').textContent =
-        new Intl.DateTimeFormat(undefined, {
-          hour: '2-digit', minute: '2-digit', second: '2-digit',
-        }).format(new Date());
+      setText(dom.lastUpdated, lastUpdatedFormatter.format(new Date()));
     } catch (e) {
       setStatus('Could not reach server: ' + e);
     } finally {
-      refreshButton.setAttribute('aria-busy', 'false');
+      setAriaBusy(dom.refreshSeatsButton, false);
       refreshPromise = null;
     }
   })();
@@ -100,24 +178,19 @@ async function refreshAllAndReschedule() {
 
 function updateControls() {
   const holdingSelectedSeat = activeHold && activeHold.seat_id === selectedSeatId;
-  document.getElementById('btn-hold').disabled =
-    mutationInFlight || !selectedSeatId || holdingSelectedSeat;
-  document.getElementById('btn-confirm').disabled = mutationInFlight || !activeHold;
-  document.getElementById('btn-release').disabled = mutationInFlight || !activeHold;
-  document.getElementById('buyer-id').disabled = mutationInFlight || !!activeHold;
-  document.getElementById('btn-refresh-bookings').disabled = mutationInFlight;
-  for (const button of document.querySelectorAll('.cancel-booking-button')) {
-    button.disabled = mutationInFlight;
-  }
+  setDisabled(dom.holdButton, mutationInFlight || !selectedSeatId || !!holdingSelectedSeat);
+  setDisabled(dom.confirmButton, mutationInFlight || !activeHold);
+  setDisabled(dom.releaseButton, mutationInFlight || !activeHold);
+  setDisabled(dom.buyerInput, mutationInFlight || !!activeHold);
+  setDisabled(dom.refreshBookingsButton, mutationInFlight);
+  for (const button of cancelBookingButtons) setDisabled(button, mutationInFlight);
 }
 
 function formatBookingTime(value) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium', timeStyle: 'short',
-  }).format(date);
+  return bookingTimeFormatter.format(date);
 }
 
 function bookingStatusLabel(booking) {
@@ -132,40 +205,90 @@ function confirmedBookingForSeat(seatId) {
   return confirmedBookingBySeatId.get(seatId) || null;
 }
 
+function reconcileOrderedChildren(container, desiredNodes) {
+  if (desiredNodes.length > 0 && !container.firstElementChild) {
+    const fragment = document.createDocumentFragment();
+    for (const node of desiredNodes) fragment.appendChild(node);
+    container.appendChild(fragment);
+    return;
+  }
+
+  let cursor = container.firstElementChild;
+  for (const node of desiredNodes) {
+    if (node === cursor) {
+      cursor = cursor.nextElementSibling;
+      continue;
+    }
+    // This branch runs only when an item is new or the server's order really
+    // changed. An unchanged poll performs no append/insert operations.
+    container.insertBefore(node, cursor);
+  }
+}
+
+function refundLabel(status) {
+  if (status === 'refunded') return 'Refunded';
+  if (status === 'failed') return 'Refund needs attention';
+  return 'Refund in progress';
+}
+
 function renderRefundTracker(bookings) {
-  const tracker = document.getElementById('refund-tracker');
-  const list = document.getElementById('refund-tracker-list');
   const refundBookings = bookings.filter(booking =>
     booking.status === 'cancelled' && booking.refund_status);
   const pending = refundBookings.filter(booking => booking.refund_status === 'pending');
   // The side panel is a compact progress surface, not booking history. Show
   // active refunds, or the latest completed refund as reassurance.
   const visible = (pending.length > 0 ? pending : refundBookings.slice(0, 1)).slice(0, 3);
-
-  list.replaceChildren();
-  tracker.hidden = visible.length === 0;
-  for (const booking of visible) {
-    const item = document.createElement('div');
-    item.className = 'refund-tracker-item';
-    const seat = document.createElement('span');
-    seat.className = 'refund-tracker-seat';
-    seat.textContent = booking.seat_id;
-    const refund = document.createElement('span');
-    refund.className = `refund-status ${booking.refund_status || ''}`;
-    refund.textContent = booking.refund_status === 'refunded'
-      ? 'Refunded'
-      : booking.refund_status === 'failed'
-        ? 'Refund needs attention'
-        : 'Refund in progress';
-    item.append(seat, refund);
-    list.appendChild(item);
+  const visibleKeys = new Set(visible.map(booking => String(booking.booking_id)));
+  for (const [key, record] of refundTrackerItems) {
+    if (visibleKeys.has(key)) continue;
+    record.element.remove();
+    refundTrackerItems.delete(key);
   }
+
+  const desiredNodes = [];
+  for (const booking of visible) {
+    const key = String(booking.booking_id);
+    const signature = `${booking.seat_id}\u0000${booking.refund_status || ''}`;
+    let record = refundTrackerItems.get(key);
+    if (!record) {
+      const element = document.createElement('div');
+      element.className = 'refund-tracker-item';
+      const seat = document.createElement('span');
+      seat.className = 'refund-tracker-seat';
+      const refund = document.createElement('span');
+      element.append(seat, refund);
+      record = {element, seat, refund, signature: null};
+      refundTrackerItems.set(key, record);
+    }
+    if (record.signature !== signature) {
+      setText(record.seat, booking.seat_id);
+      const refundClass = `refund-status ${booking.refund_status || ''}`;
+      if (record.refund.className !== refundClass) record.refund.className = refundClass;
+      setText(record.refund, refundLabel(booking.refund_status));
+      record.signature = signature;
+    }
+    desiredNodes.push(record.element);
+  }
+  reconcileOrderedChildren(dom.refundTrackerList, desiredNodes);
+  setHidden(dom.refundTracker, visible.length === 0);
 }
 
-function scheduleRefundStatusRefresh(bookings) {
+function hasPendingRefunds(bookings = knownBookings) {
+  return bookings.some(booking => booking.refund_status === 'pending');
+}
+
+function scheduleRefundStatusRefresh(bookings = knownBookings) {
   clearTimeout(refundStatusTimer);
-  if (!bookings.some(booking => booking.refund_status === 'pending')) return;
-  refundStatusTimer = setTimeout(() => refreshBookings({silent: true}), 2500);
+  refundStatusTimer = null;
+  if (document.visibilityState !== 'visible' || !hasPendingRefunds(bookings)) return;
+  refundStatusTimer = setTimeout(async () => {
+    refundStatusTimer = null;
+    await refreshBookings({silent: true});
+    // Successful responses schedule from renderBookings. On a transient
+    // failure, keep checking while the page is visible instead of silently
+    // abandoning the refund tracker.
+    if (!refundStatusTimer) scheduleRefundStatusRefresh();
+  }, 2500);
 }
 
 function syncSeatOwnershipForElement(el) {
@@ -173,119 +296,219 @@ function syncSeatOwnershipForElement(el) {
   const ownedBooking = status === 'confirmed'
     ? confirmedBookingForSeat(el.dataset.seatId)
     : null;
-  el.classList.toggle('owned-confirmed', !!ownedBooking);
-  el.disabled = status !== 'available' && !ownedBooking;
+  const visualStatus = status === 'held'
+    ? activeHold && activeHold.seat_id === el.dataset.seatId ? 'held-mine' : 'held-other'
+    : status;
+  const classes = ['seat', visualStatus];
+  if (el.dataset.seatId === selectedSeatId) classes.push('selected');
+  if (ownedBooking) classes.push('owned-confirmed');
+  const className = classes.join(' ');
+  if (el.className !== className) el.className = className;
+  setDisabled(el, status !== 'available' && !ownedBooking);
 
   const section = el.dataset.section;
   const number = seatNumber(el.dataset.seatId);
   if (ownedBooking) {
-    el.title = `${section} Stand · Seat ${number} · Your confirmed seat · Select to cancel`;
-    el.setAttribute('aria-label', `${section} stand, seat ${number}, your confirmed booking; activate to review cancellation`);
+    const title = `${section} Stand · Seat ${number} · Your confirmed seat · Select to cancel`;
+    if (el.title !== title) el.title = title;
+    setAttributeIfChanged(el, 'aria-label', `${section} stand, seat ${number}, your confirmed booking; activate to review cancellation`);
   } else {
-    el.title = `${section} Stand · Seat ${number} · ${status}`;
-    el.setAttribute('aria-label', `${section} stand, seat ${number}, ${status}`);
+    const title = `${section} Stand · Seat ${number} · ${status}`;
+    if (el.title !== title) el.title = title;
+    setAttributeIfChanged(el, 'aria-label', `${section} stand, seat ${number}, ${status}`);
   }
 }
 
-function syncSeatOwnership() {
-  for (const el of seatElements.values()) syncSeatOwnershipForElement(el);
+function syncChangedSeatOwnership(previousMap, nextMap, buyerChanged) {
+  const affectedSeatIds = new Set();
+  if (buyerChanged) {
+    for (const seatId of previousMap.keys()) affectedSeatIds.add(seatId);
+    for (const seatId of nextMap.keys()) affectedSeatIds.add(seatId);
+  } else {
+    for (const seatId of previousMap.keys()) {
+      if (!nextMap.has(seatId)) affectedSeatIds.add(seatId);
+    }
+    for (const seatId of nextMap.keys()) {
+      if (!previousMap.has(seatId)) affectedSeatIds.add(seatId);
+    }
+  }
+  for (const seatId of affectedSeatIds) {
+    const element = seatElements.get(seatId);
+    if (element) syncSeatOwnershipForElement(element);
+  }
 }
 
-function renderBookings(bookings) {
+function bookingSignature(booking) {
+  return [
+    booking.seat_id,
+    booking.status,
+    booking.refund_status || '',
+    booking.confirmed_at || '',
+    booking.cancelled_at || '',
+  ].join('\u0000');
+}
+
+function createBookingCard(booking, signature) {
+  const card = document.createElement('article');
+  card.className = `booking-record ${booking.status}`;
+
+  const top = document.createElement('div');
+  top.className = 'booking-record-top';
+  const seat = document.createElement('strong');
+  seat.className = 'booking-seat';
+  seat.textContent = booking.seat_id;
+  const badge = document.createElement('span');
+  badge.className = `status-badge ${booking.status}`;
+  badge.textContent = booking.status === 'confirmed' ? 'Confirmed' : 'Cancelled';
+  top.append(seat, badge);
+
+  const meta = document.createElement('p');
+  meta.className = 'booking-meta';
+  const timestamp = booking.status === 'cancelled'
+    ? formatBookingTime(booking.cancelled_at)
+    : formatBookingTime(booking.confirmed_at);
+  meta.textContent = `Booking #${booking.booking_id}${timestamp ? ` · ${timestamp}` : ''}`;
+
+  const footer = document.createElement('div');
+  footer.className = 'booking-record-footer';
+  let cancelButton = null;
+  if (booking.status === 'confirmed') {
+    const copy = document.createElement('span');
+    copy.className = 'refund-status refunded';
+    copy.textContent = 'Eligible to cancel';
+    cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'cancel-booking-button';
+    cancelButton.dataset.bookingId = String(booking.booking_id);
+    cancelButton.textContent = 'Cancel booking';
+    setDisabled(cancelButton, mutationInFlight);
+    cancelBookingButtons.add(cancelButton);
+    footer.append(copy, cancelButton);
+  } else {
+    const refund = document.createElement('span');
+    refund.className = `refund-status ${booking.refund_status || ''}`;
+    refund.textContent = bookingStatusLabel(booking);
+    footer.append(refund);
+  }
+
+  card.append(top, meta, footer);
+  return {element: card, cancelButton, signature};
+}
+
+function renderBookings(bookings, {buyer = buyerId()} = {}) {
+  const previousConfirmedBookings = confirmedBookingBySeatId;
+  const previousBuyer = knownBookingsBuyer;
   knownBookings = bookings;
-  knownBookingsBuyer = buyerId();
-  confirmedBookingBySeatId = new Map(bookings
+  knownBookingsBuyer = buyer;
+  const nextConfirmedBookings = new Map(bookings
     .filter(booking => booking.status === 'confirmed')
     .map(booking => [booking.seat_id, booking]));
-  const list = document.getElementById('bookings-list');
-  const empty = document.getElementById('bookings-empty');
-  document.getElementById('bookings-buyer').textContent = knownBookingsBuyer;
-  document.getElementById('bookings-count').textContent = bookings.length;
-  list.replaceChildren();
-  empty.hidden = bookings.length > 0;
+  confirmedBookingBySeatId = nextConfirmedBookings;
+
+  bookingById.clear();
+  const desiredKeys = new Set();
+  const desiredNodes = [];
 
   for (const booking of bookings) {
-    const card = document.createElement('article');
-    card.className = `booking-record ${booking.status}`;
-
-    const top = document.createElement('div');
-    top.className = 'booking-record-top';
-    const seat = document.createElement('strong');
-    seat.className = 'booking-seat';
-    seat.textContent = booking.seat_id;
-    const badge = document.createElement('span');
-    badge.className = `status-badge ${booking.status}`;
-    badge.textContent = booking.status === 'confirmed' ? 'Confirmed' : 'Cancelled';
-    top.append(seat, badge);
-
-    const meta = document.createElement('p');
-    meta.className = 'booking-meta';
-    const timestamp = booking.status === 'cancelled'
-      ? formatBookingTime(booking.cancelled_at)
-      : formatBookingTime(booking.confirmed_at);
-    meta.textContent = `Booking #${booking.booking_id}${timestamp ? ` · ${timestamp}` : ''}`;
-
-    const footer = document.createElement('div');
-    footer.className = 'booking-record-footer';
-    if (booking.status === 'confirmed') {
-      const copy = document.createElement('span');
-      copy.className = 'refund-status refunded';
-      copy.textContent = 'Eligible to cancel';
-      const cancelButton = document.createElement('button');
-      cancelButton.type = 'button';
-      cancelButton.className = 'cancel-booking-button';
-      cancelButton.textContent = 'Cancel booking';
-      cancelButton.onclick = () => openCancelDialog(booking);
-      footer.append(copy, cancelButton);
-    } else {
-      const refund = document.createElement('span');
-      refund.className = `refund-status ${booking.refund_status || ''}`;
-      refund.textContent = bookingStatusLabel(booking);
-      footer.append(refund);
+    const key = String(booking.booking_id);
+    const signature = bookingSignature(booking);
+    desiredKeys.add(key);
+    bookingById.set(key, booking);
+    let record = bookingCards.get(key);
+    if (!record || record.signature !== signature) {
+      const replacement = createBookingCard(booking, signature);
+      if (record) {
+        if (record.cancelButton) cancelBookingButtons.delete(record.cancelButton);
+        record.element.replaceWith(replacement.element);
+      }
+      record = replacement;
+      bookingCards.set(key, record);
     }
-
-    card.append(top, meta, footer);
-    list.appendChild(card);
+    desiredNodes.push(record.element);
   }
+
+  for (const [key, record] of bookingCards) {
+    if (desiredKeys.has(key)) continue;
+    if (record.cancelButton) cancelBookingButtons.delete(record.cancelButton);
+    record.element.remove();
+    bookingCards.delete(key);
+  }
+  reconcileOrderedChildren(dom.bookingsList, desiredNodes);
+  setText(dom.bookingsBuyer, buyer);
+  setText(dom.bookingsCount, bookings.length);
+  setHidden(dom.bookingsEmpty, bookings.length > 0);
   renderRefundTracker(bookings);
-  syncSeatOwnership();
+  syncChangedSeatOwnership(
+    previousConfirmedBookings,
+    nextConfirmedBookings,
+    previousBuyer !== buyer,
+  );
   scheduleRefundStatusRefresh(bookings);
   updateControls();
 }
 
-async function refreshBookings({silent = false} = {}) {
+function abortBookingRefresh() {
+  if (!bookingRequest) return;
+  const request = bookingRequest;
+  bookingRequest = null;
+  bookingRequestGeneration++;
+  request.controller.abort();
+  setAriaBusy(dom.refreshBookingsButton, false);
+}
+
+function refreshBookings({silent = false, force = false} = {}) {
   const requestedBuyer = buyerId();
-  const generation = ++bookingRequestGeneration;
-  const refreshButton = document.getElementById('btn-refresh-bookings');
-  refreshButton.setAttribute('aria-busy', 'true');
-  try {
-    const params = new URLSearchParams({buyer_id: requestedBuyer});
-    const res = await fetch(`/matches/${MATCH_ID}/bookings?${params}`);
-    if (!res.ok) throw new Error(`server returned ${res.status}`);
-    const data = await res.json();
-    if (generation !== bookingRequestGeneration || requestedBuyer !== buyerId()) return;
-    renderBookings(data.bookings || []);
-  } catch (error) {
-    if (!silent && generation === bookingRequestGeneration) {
-      setStatus('Could not load your bookings -- please try again.');
-    }
-  } finally {
-    if (generation === bookingRequestGeneration) {
-      refreshButton.setAttribute('aria-busy', 'false');
-    }
+  if (bookingRequest && bookingRequest.buyer === requestedBuyer && !force) {
+    if (!silent) bookingRequest.reportErrors = true;
+    return bookingRequest.promise;
   }
+  if (bookingRequest) abortBookingRefresh();
+
+  const generation = ++bookingRequestGeneration;
+  const controller = new AbortController();
+  const request = {
+    buyer: requestedBuyer,
+    controller,
+    generation,
+    reportErrors: !silent,
+    promise: null,
+  };
+  bookingRequest = request;
+  setAriaBusy(dom.refreshBookingsButton, true);
+  request.promise = (async () => {
+    try {
+      const params = new URLSearchParams({buyer_id: requestedBuyer});
+      const res = await fetch(`/matches/${MATCH_ID}/bookings?${params}`, {
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`server returned ${res.status}`);
+      const data = await res.json();
+      if (bookingRequest !== request || generation !== bookingRequestGeneration || requestedBuyer !== buyerId()) return;
+      renderBookings(data.bookings || [], {buyer: requestedBuyer});
+    } catch (error) {
+      if (error.name !== 'AbortError' && request.reportErrors && bookingRequest === request) {
+        setStatus('Could not load your bookings -- please try again.');
+      }
+    } finally {
+      if (bookingRequest === request) {
+        bookingRequest = null;
+        setAriaBusy(dom.refreshBookingsButton, false);
+      }
+    }
+  })();
+  return request.promise;
 }
 
 function openCancelDialog(booking) {
   cancelTarget = {booking, buyer: buyerId()};
-  document.getElementById('cancel-dialog-seat').textContent = booking.seat_id;
-  document.getElementById('cancel-dialog').showModal();
-  document.getElementById('btn-cancel-dismiss').focus();
+  setText(dom.cancelDialogSeat, booking.seat_id);
+  dom.cancelDialog.showModal();
+  dom.cancelDismissButton.focus();
 }
 
 function closeCancelDialog() {
   if (mutationInFlight) return;
-  document.getElementById('cancel-dialog').close();
+  dom.cancelDialog.close();
   cancelTarget = null;
 }
 
@@ -300,7 +523,7 @@ async function cancelConfirmedBooking() {
   let cancelled = false;
   mutationInFlight = true;
   updateControls();
-  document.getElementById('btn-cancel-confirm').disabled = true;
+  setDisabled(dom.cancelConfirmButton, true);
   try {
     const res = await fetch(`/bookings/${booking.booking_id}/cancel`, {
       method: 'POST',
@@ -308,7 +531,7 @@ async function cancelConfirmedBooking() {
       body: JSON.stringify({buyer_id: buyerId()}),
     });
     if (res.status === 200) {
-      document.getElementById('cancel-dialog').close();
+      dom.cancelDialog.close();
       cancelTarget = null;
       cancelled = true;
       setStatus(`${booking.seat_id} cancelled. Your refund is being processed.`, 'success');
@@ -321,95 +544,122 @@ async function cancelConfirmedBooking() {
     setStatus('Network error while cancelling -- please try again.');
   } finally {
     mutationInFlight = false;
-    document.getElementById('btn-cancel-confirm').disabled = false;
+    setDisabled(dom.cancelConfirmButton, false);
     updateControls();
-    await Promise.all([refreshAfterMutation(), refreshBookings({silent: true})]);
+    await Promise.all([
+      refreshAfterMutation(),
+      refreshBookings({silent: true, force: true}),
+    ]);
     if (cancelled) setStatus(`${booking.seat_id} cancelled. Track the refund status here.`, 'success');
   }
 }
 
 function seatNumber(seatId) {
+  if (seatNumberCache.has(seatId)) return seatNumberCache.get(seatId);
   const value = Number.parseInt(seatId.split('-').pop(), 10);
-  return Number.isNaN(value) ? Number.MAX_SAFE_INTEGER : value;
+  const number = Number.isNaN(value) ? Number.MAX_SAFE_INTEGER : value;
+  seatNumberCache.set(seatId, number);
+  return number;
 }
 
 function updateSelectionSummary(seatId) {
-  const selection = document.getElementById('selection');
-  const hint = document.getElementById('selection-hint');
   if (!seatId) {
-    selection.textContent = 'None yet';
-    hint.textContent = 'Choose a green seat from the stadium';
+    setText(dom.selection, 'None yet');
+    setText(dom.selectionHint, 'Choose a green seat from the stadium');
     return;
   }
   const [section] = seatId.split('-');
-  selection.textContent = seatId;
-  hint.textContent = `${section} Stand · Seat ${seatNumber(seatId)}`;
+  setText(dom.selection, seatId);
+  setText(dom.selectionHint, `${section} Stand · Seat ${seatNumber(seatId)}`);
 }
 
 function applySeatPlacement(el, section, tierIndex, tier) {
-  const rowCounts = TIER_ROW_COUNTS[tier];
-  let row = 0;
-  let column = tierIndex;
-  while (column >= rowCounts[row]) {
-    column -= rowCounts[row];
-    row++;
+  const placementKey = `${section}-${tier}-${tierIndex}`;
+  if (el.dataset.placementKey === placementKey) return;
+
+  let placement = seatPlacementCache.get(placementKey);
+  if (!placement) {
+    const rowCounts = TIER_ROW_COUNTS[tier];
+    let row = 0;
+    let column = tierIndex;
+    while (column >= rowCounts[row]) {
+      column -= rowCounts[row];
+      row++;
+    }
+    const seatsInRow = rowCounts[row];
+    const globalRow = tier === 'lower' ? row : row + TIER_ROW_COUNTS.lower.length;
+    const sectionCenters = { EAST: 0, SOUTH: 90, WEST: 180, NORTH: 270 };
+    // The first row is the shortest arc, so let it sweep farther into the
+    // section corners rather than compressing its chairs at East and West.
+    const arcHalfAngle = globalRow === 0 ? 41.5 : 39;
+    const angle = sectionCenters[section] - arcHalfAngle
+      + column * ((arcHalfAngle * 2) / (seatsInRow - 1));
+    const radians = angle * Math.PI / 180;
+    // The horizontal and vertical increments resolve to the same physical
+    // distance at the stadium's fixed aspect ratio. This prevents side rows
+    // from spreading much farther apart than the north/south rows.
+    const xRadius = 27.3 + globalRow * 2.9;
+    const yRadius = 22.7 + globalRow * 2.9 * STADIUM_ASPECT_RATIO;
+    const x = 50 + Math.cos(radians) * xRadius;
+    const y = 50 + Math.sin(radians) * yRadius;
+    // Tangent of x = rx cos(t), y = ry sin(t), converted to screen units.
+    const tangentX = -xRadius * Math.sin(radians);
+    const tangentY = (yRadius / STADIUM_ASPECT_RATIO) * Math.cos(radians);
+    const tangentAngle = Math.atan2(tangentY, tangentX) * 180 / Math.PI;
+
+    placement = {
+      x: `${x}%`,
+      y: `${y}%`,
+      angle: `${tangentAngle}deg`,
+      numberAngle: `${-tangentAngle}deg`,
+      layer: `${7 + Math.round(y / 20)}`,
+      row: String(row + 1),
+      bowlRow: String(globalRow + 1),
+      tier,
+    };
+    seatPlacementCache.set(placementKey, placement);
   }
-  const seatsInRow = rowCounts[row];
-  const globalRow = tier === 'lower' ? row : row + TIER_ROW_COUNTS.lower.length;
-  const sectionCenters = { EAST: 0, SOUTH: 90, WEST: 180, NORTH: 270 };
-  // The first row is the shortest arc, so let it sweep farther into the
-  // section corners rather than compressing its chairs at East and West.
-  const arcHalfAngle = globalRow === 0 ? 41.5 : 39;
-  const angle = sectionCenters[section] - arcHalfAngle
-    + column * ((arcHalfAngle * 2) / (seatsInRow - 1));
-  const radians = angle * Math.PI / 180;
-  // The horizontal and vertical increments resolve to the same physical
-  // distance at the stadium's fixed aspect ratio. This prevents side rows
-  // from spreading much farther apart than the north/south rows.
-  const xRadius = 27.3 + globalRow * 2.9;
-  const yRadius = 22.7 + globalRow * 2.9 * STADIUM_ASPECT_RATIO;
-  const x = 50 + Math.cos(radians) * xRadius;
-  const y = 50 + Math.sin(radians) * yRadius;
-  // Tangent of x = rx cos(t), y = ry sin(t), converted to screen units.
-  const tangentX = -xRadius * Math.sin(radians);
-  const tangentY = (yRadius / STADIUM_ASPECT_RATIO) * Math.cos(radians);
-  const tangentAngle = Math.atan2(tangentY, tangentX) * 180 / Math.PI;
 
   // Every chair belongs to the same elliptical bowl. The cardinal sections
-  // are simply four arcs of it, and each chair faces the field tangent.
-  el.style.setProperty('--seat-x', `${x}%`);
-  el.style.setProperty('--seat-y', `${y}%`);
-  el.style.setProperty('--seat-angle', `${tangentAngle}deg`);
-  el.style.setProperty('--seat-number-angle', `${-tangentAngle}deg`);
-  el.style.setProperty('--seat-layer', `${7 + Math.round(y / 20)}`);
-  el.dataset.row = row + 1;
-  el.dataset.bowlRow = globalRow + 1;
-  el.dataset.tier = tier;
+  // are simply four arcs of it, and each chair faces the field tangent. These
+  // values are immutable for the normal polling path and are written once.
+  el.style.setProperty('--seat-x', placement.x);
+  el.style.setProperty('--seat-y', placement.y);
+  el.style.setProperty('--seat-angle', placement.angle);
+  el.style.setProperty('--seat-number-angle', placement.numberAngle);
+  el.style.setProperty('--seat-layer', placement.layer);
+  el.dataset.row = placement.row;
+  el.dataset.bowlRow = placement.bowlRow;
+  el.dataset.tier = placement.tier;
+  el.dataset.placementKey = placementKey;
 }
 
-function updateSeatElement(el, seat, tierIndex, tier) {
-  let visualStatus = seat.status;
-  if (seat.status === 'held') {
-    visualStatus = activeHold && activeHold.seat_id === seat.seat_id
-      ? 'held-mine'
-      : 'held-other';
-  }
-
-  el.className = `seat ${visualStatus}`;
-  if (seat.seat_id === selectedSeatId) el.classList.add('selected');
-  let numberLabel = el.querySelector('.seat-number');
+function updateSeatElement(el, seat, section, tierIndex, tier) {
+  let numberLabel = el._seatNumberLabel;
   if (!numberLabel) {
     numberLabel = document.createElement('span');
     numberLabel.className = 'seat-number';
     numberLabel.setAttribute('aria-hidden', 'true');
     el.appendChild(numberLabel);
+    el._seatNumberLabel = numberLabel;
   }
-  numberLabel.textContent = seatNumber(seat.seat_id);
-  el.dataset.seatId = seat.seat_id;
-  el.dataset.section = seat.section;
-  el.dataset.status = seat.status;
-  syncSeatOwnershipForElement(el);
-  applySeatPlacement(el, seat.section, tierIndex, tier);
+  setText(numberLabel, seatNumber(seat.seat_id));
+
+  let presentationChanged = false;
+  if (el.dataset.seatId !== seat.seat_id) {
+    el.dataset.seatId = seat.seat_id;
+    presentationChanged = true;
+  }
+  if (el.dataset.section !== section) {
+    el.dataset.section = section;
+    presentationChanged = true;
+  }
+  if (el.dataset.status !== seat.status) {
+    el.dataset.status = seat.status;
+    presentationChanged = true;
+  }
+  applySeatPlacement(el, section, tierIndex, tier);
+  if (presentationChanged) syncSeatOwnershipForElement(el);
 }
 
 function renderSeats(seats) {
@@ -418,19 +668,20 @@ function renderSeats(seats) {
   for (const seat of seats) {
     seatById.set(seat.seat_id, seat);
     const section = seat.section.toUpperCase();
-    if (bySection[section]) bySection[section].push({...seat, section});
+    if (bySection[section]) bySection[section].push(seat);
   }
 
   if (selectedSeatId) {
     const selectedSeat = seatById.get(selectedSeatId);
     const isOwnHold = activeHold && activeHold.seat_id === selectedSeatId;
     if (!selectedSeat || (selectedSeat.status !== 'available' && !isOwnHold)) {
-      selectedSeatId = activeHold ? activeHold.seat_id : null;
-      updateSelectionSummary(selectedSeatId);
+      setSelectedSeatState(activeHold ? activeHold.seat_id : null);
     }
   }
 
   const seen = new Set();
+  const desiredByContainer = new Map();
+  for (const key of dom.seatContainers.keys()) desiredByContainer.set(key, []);
   let availableCount = 0;
   for (const section of STADIUM_SECTIONS) {
     const sectionSeats = bySection[section].sort((a, b) =>
@@ -440,7 +691,6 @@ function renderSeats(seats) {
     sectionSeats.forEach((seat, index) => {
       const tier = index < LOWER_TIER_SEATS ? 'lower' : 'upper';
       const tierIndex = tier === 'lower' ? index : index - LOWER_TIER_SEATS;
-      const container = document.getElementById(`seats-${section}-${tier}`);
       seen.add(seat.seat_id);
       if (seat.status === 'available') {
         availableCount++;
@@ -451,33 +701,33 @@ function renderSeats(seats) {
       if (!el) {
         el = document.createElement('button');
         el.type = 'button';
-        el.onclick = () => handleSeatClick(el.dataset.seatId, el);
         seatElements.set(seat.seat_id, el);
       }
-      updateSeatElement(el, seat, tierIndex, tier);
-      // appendChild moves an existing element without recreating it, keeping
-      // keyboard focus and eliminating the old ten-second refresh flicker.
-      container.appendChild(el);
+      updateSeatElement(el, seat, section, tierIndex, tier);
+      desiredByContainer.get(`${section}-${tier}`).push(el);
     });
 
-    document.getElementById(`count-${section}`).textContent =
-      `${sectionAvailable}/${sectionSeats.length} open`;
+    setText(dom.sectionCounts.get(section), `${sectionAvailable}/${sectionSeats.length} open`);
   }
 
   for (const [seatId, el] of seatElements) {
     if (!seen.has(seatId)) {
       el.remove();
       seatElements.delete(seatId);
+      seatNumberCache.delete(seatId);
     }
   }
-  document.getElementById('available-count').textContent = availableCount;
+  for (const [key, desiredNodes] of desiredByContainer) {
+    reconcileOrderedChildren(dom.seatContainers.get(key), desiredNodes);
+  }
+  setText(dom.availableCount, availableCount);
   updateControls();
 
   if (!stadiumCentered) {
     requestAnimationFrame(() => {
-      const scroller = document.querySelector('.stadium-scroller');
-      if (scroller.scrollWidth > scroller.clientWidth) {
-        scroller.scrollLeft = (scroller.scrollWidth - scroller.clientWidth) / 2;
+      if (dom.stadiumScroller.scrollWidth > dom.stadiumScroller.clientWidth) {
+        dom.stadiumScroller.scrollLeft =
+          (dom.stadiumScroller.scrollWidth - dom.stadiumScroller.clientWidth) / 2;
       }
       stadiumCentered = true;
     });
@@ -493,13 +743,20 @@ function handleSeatClick(seatId, seatElement) {
   selectSeat(seatId, seatElement);
 }
 
-function selectSeat(seatId, seatElement) {
+function setSelectedSeatState(seatId) {
+  const previousSeatId = selectedSeatId;
   selectedSeatId = seatId;
-  for (const selected of document.querySelectorAll('.seat.selected')) {
-    selected.classList.remove('selected');
+  if (previousSeatId !== seatId) {
+    const previousElement = seatElements.get(previousSeatId);
+    if (previousElement) syncSeatOwnershipForElement(previousElement);
+    const nextElement = seatElements.get(seatId);
+    if (nextElement) syncSeatOwnershipForElement(nextElement);
   }
-  seatElement.classList.add('selected');
   updateSelectionSummary(seatId);
+}
+
+function selectSeat(seatId, seatElement) {
+  setSelectedSeatState(seatId);
   setStatus('');
   updateControls();
 }
@@ -521,19 +778,17 @@ async function holdSeat() {
     if (res.status === 201) {
       const hold = await res.json();
       activeHold = hold;
-      selectedSeatId = hold.seat_id;
+      setSelectedSeatState(hold.seat_id);
       setStatus(replacingSeatId
         ? `Released ${replacingSeatId}; ${hold.seat_id} is now held.`
         : `${hold.seat_id} is held for you.`, 'success');
-      updateSelectionSummary(hold.seat_id);
       showHoldPanel(hold);
     } else {
       setStatus('Seat just taken -- pick another.');
       if (activeHold) {
         // The server replaces holds atomically, so a failed replacement means
         // the previous hold is still valid. Put the selection back on it.
-        selectedSeatId = activeHold.seat_id;
-        updateSelectionSummary(activeHold.seat_id);
+        setSelectedSeatState(activeHold.seat_id);
       }
     }
   } catch (e) {
@@ -548,16 +803,17 @@ async function holdSeat() {
 }
 
 function showHoldPanel(hold) {
-  document.getElementById('hold-panel').hidden = false;
-  document.getElementById('hold-seat').textContent = hold.seat_id;
+  setHidden(dom.holdPanel, false);
+  setText(dom.holdSeat, hold.seat_id);
   startCountdown(new Date(hold.hold_expires_at));
   updateControls();
 }
 
 function startCountdown(expiresAt) {
   clearInterval(countdownTimer);
+  const expiresAtMs = expiresAt.getTime();
   const renderCountdown = () => {
-    const remainingMs = expiresAt - new Date();
+    const remainingMs = expiresAtMs - Date.now();
     if (remainingMs <= 0) {
       clearInterval(countdownTimer);
       setStatus('Your hold expired.');
@@ -567,8 +823,7 @@ function startCountdown(expiresAt) {
     }
     const m = Math.floor(remainingMs / 60000);
     const s = Math.floor((remainingMs % 60000) / 1000);
-    document.getElementById('countdown').textContent =
-      `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    setText(dom.countdown, `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`);
     return true;
   };
   if (renderCountdown()) countdownTimer = setInterval(renderCountdown, 1000);
@@ -596,7 +851,7 @@ async function confirmBooking() {
         booking,
         ...knownBookings.filter(item => item.booking_id !== booking.booking_id),
       ]);
-      await refreshBookings({silent: true});
+      await refreshBookings({silent: true, force: true});
     } else {
       setStatus('Your hold expired.');
       resetHoldState();
@@ -642,26 +897,24 @@ async function releaseHold() {
 
 function resetHoldState() {
   clearInterval(countdownTimer);
+  // Remove the selection while activeHold is still set so the held chair
+  // keeps its current colour until the authoritative seat refresh arrives.
+  setSelectedSeatState(null);
   activeHold = null;
-  selectedSeatId = null;
-  document.getElementById('hold-panel').hidden = true;
-  for (const selected of document.querySelectorAll('.seat.selected')) {
-    selected.classList.remove('selected');
-  }
-  updateSelectionSummary(null);
+  setHidden(dom.holdPanel, true);
   updateControls();
 }
 
 function switchAppTab(tabName, {refresh = true} = {}) {
   const showBookings = tabName === 'bookings';
-  const seatMapTab = document.getElementById('tab-seat-map');
-  const bookingsTab = document.getElementById('tab-my-bookings');
-  document.getElementById('seat-map-view').hidden = showBookings;
-  document.getElementById('my-bookings-view').hidden = !showBookings;
-  seatMapTab.setAttribute('aria-selected', String(!showBookings));
-  bookingsTab.setAttribute('aria-selected', String(showBookings));
-  seatMapTab.tabIndex = showBookings ? -1 : 0;
-  bookingsTab.tabIndex = showBookings ? 0 : -1;
+  setHidden(dom.seatMapView, showBookings);
+  setHidden(dom.bookingsView, !showBookings);
+  setAttributeIfChanged(dom.seatMapTab, 'aria-selected', String(!showBookings));
+  setAttributeIfChanged(dom.bookingsTab, 'aria-selected', String(showBookings));
+  const seatMapTabIndex = showBookings ? -1 : 0;
+  const bookingsTabIndex = showBookings ? 0 : -1;
+  if (dom.seatMapTab.tabIndex !== seatMapTabIndex) dom.seatMapTab.tabIndex = seatMapTabIndex;
+  if (dom.bookingsTab.tabIndex !== bookingsTabIndex) dom.bookingsTab.tabIndex = bookingsTabIndex;
   if (showBookings && refresh) refreshBookings({silent: true});
 }
 
@@ -670,35 +923,46 @@ function handleTabKeydown(event) {
   event.preventDefault();
   const goToBookings = event.key === 'ArrowRight' || event.key === 'End';
   switchAppTab(goToBookings ? 'bookings' : 'map');
-  document.getElementById(goToBookings ? 'tab-my-bookings' : 'tab-seat-map').focus();
+  (goToBookings ? dom.bookingsTab : dom.seatMapTab).focus();
 }
 
-document.getElementById('btn-hold').onclick = holdSeat;
-document.getElementById('btn-confirm').onclick = confirmBooking;
-document.getElementById('btn-release').onclick = releaseHold;
-document.getElementById('btn-refresh').onclick = refreshAllAndReschedule;
-document.getElementById('btn-refresh-bookings').onclick = () => refreshBookings();
-document.getElementById('btn-cancel-dismiss').onclick = closeCancelDialog;
-document.getElementById('btn-cancel-confirm').onclick = cancelConfirmedBooking;
-document.getElementById('tab-seat-map').onclick = () => switchAppTab('map');
-document.getElementById('tab-my-bookings').onclick = () => switchAppTab('bookings');
-document.getElementById('tab-seat-map').onkeydown = handleTabKeydown;
-document.getElementById('tab-my-bookings').onkeydown = handleTabKeydown;
-document.getElementById('btn-change-buyer').onclick = () => {
+dom.holdButton.onclick = holdSeat;
+dom.confirmButton.onclick = confirmBooking;
+dom.releaseButton.onclick = releaseHold;
+dom.refreshSeatsButton.onclick = refreshAllAndReschedule;
+dom.refreshBookingsButton.onclick = () => refreshBookings();
+dom.cancelDismissButton.onclick = closeCancelDialog;
+dom.cancelConfirmButton.onclick = cancelConfirmedBooking;
+dom.seatMapTab.onclick = () => switchAppTab('map');
+dom.bookingsTab.onclick = () => switchAppTab('bookings');
+dom.seatMapTab.onkeydown = handleTabKeydown;
+dom.bookingsTab.onkeydown = handleTabKeydown;
+dom.changeBuyerButton.onclick = () => {
   switchAppTab('map', {refresh: false});
-  document.getElementById('buyer-id').focus();
+  dom.buyerInput.focus();
 };
-document.getElementById('cancel-dialog').addEventListener('close', () => {
+dom.stadiumScroller.addEventListener('click', event => {
+  const seatElement = event.target.closest('.seat');
+  if (!seatElement || !dom.stadiumScroller.contains(seatElement)) return;
+  handleSeatClick(seatElement.dataset.seatId, seatElement);
+});
+dom.bookingsList.addEventListener('click', event => {
+  const button = event.target.closest('.cancel-booking-button');
+  if (!button || !dom.bookingsList.contains(button)) return;
+  const booking = bookingById.get(button.dataset.bookingId);
+  if (booking) openCancelDialog(booking);
+});
+dom.cancelDialog.addEventListener('close', () => {
   if (!mutationInFlight) cancelTarget = null;
 });
-document.getElementById('cancel-dialog').addEventListener('cancel', event => {
+dom.cancelDialog.addEventListener('cancel', event => {
   if (mutationInFlight) event.preventDefault();
 });
-document.getElementById('buyer-id').addEventListener('input', () => {
+dom.buyerInput.addEventListener('input', () => {
   if (cancelTarget && !mutationInFlight) closeCancelDialog();
-  knownBookings = [];
-  knownBookingsBuyer = null;
-  confirmedBookingBySeatId = new Map();
+  abortBookingRefresh();
+  // renderBookings computes the ownership diff, so changing buyers touches
+  // only the previously-owned red seats instead of scanning all 400 chairs.
   renderBookings([]);
   clearTimeout(buyerRefreshTimer);
   buyerRefreshTimer = setTimeout(() => refreshBookings(), 350);
@@ -707,8 +971,15 @@ document.getElementById('buyer-id').addEventListener('input', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     refreshAndReschedule();
+    if (hasPendingRefunds()) {
+      refreshBookings({silent: true, force: true});
+    } else {
+      scheduleRefundStatusRefresh();
+    }
   } else {
     clearTimeout(refreshTimer);
+    clearTimeout(refundStatusTimer);
+    refundStatusTimer = null;
   }
 });
 

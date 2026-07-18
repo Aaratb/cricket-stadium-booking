@@ -151,3 +151,50 @@ func TestListSeats_FreshAfterEveryMutation(t *testing.T) {
 		t.Errorf("status after release = %q, want available (release must invalidate the cache)", got)
 	}
 }
+
+func TestListSeats_ConditionalGETChangesAfterMutation(t *testing.T) {
+	handler, matchID := testServer(t)
+	path := "/matches/" + matchID + "/seats"
+
+	first := doRequest(t, handler, http.MethodGet, path, "")
+	if first.Code != http.StatusOK {
+		t.Fatalf("initial list status = %d, want 200", first.Code)
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("initial list ETag is empty")
+	}
+	if got := first.Header().Get("Cache-Control"); got != "public, no-cache" {
+		t.Errorf("initial Cache-Control = %q, want public, no-cache", got)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("If-None-Match", etag)
+	unchanged := httptest.NewRecorder()
+	handler.ServeHTTP(unchanged, req)
+	if unchanged.Code != http.StatusNotModified {
+		t.Fatalf("unchanged list status = %d, want 304; body: %s", unchanged.Code, unchanged.Body.String())
+	}
+	if unchanged.Body.Len() != 0 {
+		t.Errorf("unchanged list body length = %d, want 0", unchanged.Body.Len())
+	}
+
+	hold := doRequest(t, handler, http.MethodPost, "/matches/"+matchID+"/seats/A1/hold", `{"buyer_id":"etag-owner@example.com"}`)
+	if hold.Code != http.StatusCreated {
+		t.Fatalf("hold status = %d, want 201; body: %s", hold.Code, hold.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("If-None-Match", etag)
+	changed := httptest.NewRecorder()
+	handler.ServeHTTP(changed, req)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("changed list status = %d, want 200; body: %s", changed.Code, changed.Body.String())
+	}
+	if changed.Header().Get("ETag") == etag {
+		t.Fatal("seat mutation did not change ETag")
+	}
+	if !strings.Contains(changed.Body.String(), `"status":"held"`) {
+		t.Errorf("changed list body = %s, want held status", changed.Body.String())
+	}
+}
