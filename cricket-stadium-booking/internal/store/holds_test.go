@@ -38,6 +38,90 @@ func TestPlaceHold_ConflictOnSameSeat(t *testing.T) {
 	}
 }
 
+func TestPlaceHold_ReplacesPreviousBuyerHold(t *testing.T) {
+	s, matchID := testStore(t)
+	ctx := context.Background()
+
+	first, err := s.PlaceHold(ctx, matchID, "A1", "alice@example.com", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("first PlaceHold: %v", err)
+	}
+	second, err := s.PlaceHold(ctx, matchID, "A2", "alice@example.com", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("replacement PlaceHold: %v", err)
+	}
+
+	var firstStatus string
+	if err := s.pool.QueryRow(ctx, `SELECT status FROM bookings WHERE id = $1`, first.ID).Scan(&firstStatus); err != nil {
+		t.Fatalf("read first hold: %v", err)
+	}
+	if firstStatus != "cancelled" {
+		t.Errorf("first hold status = %q, want cancelled", firstStatus)
+	}
+	if second.Status != "held" || second.SeatID != "A2" {
+		t.Errorf("replacement = %+v, want A2 held", second)
+	}
+}
+
+func TestPlaceHold_FailedReplacementKeepsPreviousHold(t *testing.T) {
+	s, matchID := testStore(t)
+	ctx := context.Background()
+
+	first, err := s.PlaceHold(ctx, matchID, "A1", "alice@example.com", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("alice PlaceHold: %v", err)
+	}
+	if _, err := s.PlaceHold(ctx, matchID, "A2", "bob@example.com", 5*time.Minute); err != nil {
+		t.Fatalf("bob PlaceHold: %v", err)
+	}
+
+	if _, err := s.PlaceHold(ctx, matchID, "A2", "alice@example.com", 5*time.Minute); !errors.Is(err, ErrSeatUnavailable) {
+		t.Fatalf("replacement err = %v, want ErrSeatUnavailable", err)
+	}
+
+	var firstStatus string
+	if err := s.pool.QueryRow(ctx, `SELECT status FROM bookings WHERE id = $1`, first.ID).Scan(&firstStatus); err != nil {
+		t.Fatalf("read first hold: %v", err)
+	}
+	if firstStatus != "held" {
+		t.Errorf("first hold status = %q, want held after rolled-back replacement", firstStatus)
+	}
+}
+
+func TestPlaceHold_ConcurrentBuyerReplacementsLeaveOneHold(t *testing.T) {
+	s, matchID := testStore(t)
+	ctx := context.Background()
+
+	const racers = 30
+	seatIDs := []string{"A1", "A2", "A3"}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(racers)
+	for i := 0; i < racers; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, err := s.PlaceHold(ctx, matchID, seatIDs[i%len(seatIDs)], "alice@example.com", 5*time.Minute)
+			if err != nil && !errors.Is(err, ErrSeatUnavailable) {
+				t.Errorf("replacement racer %d: %v", i, err)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var active int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM bookings
+		WHERE match_id = $1 AND buyer_id = 'alice@example.com' AND status = 'held'`,
+		matchID).Scan(&active); err != nil {
+		t.Fatalf("count active buyer holds: %v", err)
+	}
+	if active != 1 {
+		t.Errorf("active buyer holds = %d, want exactly 1", active)
+	}
+}
+
 // TestPlaceHold_ConcurrentRace is the unit-level version of the load-test
 // harness's Scenario A: N goroutines racing one seat must produce exactly
 // one winner, proven from actual Postgres state, not a client-side count.
@@ -131,7 +215,7 @@ func TestReleaseHold_FreesTheSeatForAnotherBuyer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlaceHold: %v", err)
 	}
-	if err := s.ReleaseHold(ctx, hold.ID, "alice@example.com"); err != nil {
+	if _, err := s.ReleaseHold(ctx, hold.ID, "alice@example.com"); err != nil {
 		t.Fatalf("ReleaseHold: %v", err)
 	}
 
@@ -151,7 +235,7 @@ func TestReleaseHold_NotFoundForWrongBuyer(t *testing.T) {
 		t.Fatalf("PlaceHold: %v", err)
 	}
 
-	err = s.ReleaseHold(ctx, hold.ID, "mallory@example.com")
+	_, err = s.ReleaseHold(ctx, hold.ID, "mallory@example.com")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}

@@ -17,7 +17,18 @@ import (
 	"stadiumbooking/internal/store"
 )
 
-const pollInterval = 2 * time.Second
+const (
+	pollInterval = 2 * time.Second
+	// sweepBatchSize bounds each expired-hold sweep so it stays a short
+	// transaction. Larger than a typical poll batch because expiring a row is
+	// cheaper than driving a refund side effect.
+	sweepBatchSize = 1000
+	// idempotencyKeyRetention is the retry horizon documented in migration
+	// 0006: a key older than this is no longer replayable and is pruned so
+	// the table (and the FK pins it holds on bookings rows) stays bounded.
+	idempotencyKeyRetention = 24 * time.Hour
+	pruneBatchSize          = 1000
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -45,7 +56,37 @@ func main() {
 			return
 		case <-ticker.C:
 			processBatch(ctx, st, cfg.OutboxBatchSize)
+			sweepExpiredHolds(ctx, st)
+			pruneIdempotencyKeys(ctx, st)
 		}
+	}
+}
+
+// sweepExpiredHolds reclaims abandoned expired holds so they don't bloat the
+// bookings table/index. Best-effort: a failure is logged and retried on the
+// next tick, and correctness never depends on it (reads derive status live).
+func sweepExpiredHolds(ctx context.Context, st *store.Store) {
+	n, err := st.SweepExpiredHolds(ctx, sweepBatchSize)
+	if err != nil {
+		log.Printf("sweep expired holds: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("swept %d expired holds", n)
+	}
+}
+
+// pruneIdempotencyKeys drops keys past the retry horizon. Best-effort for
+// the same reasons as sweepExpiredHolds: a failure is logged and retried on
+// the next tick, and correctness never depends on it.
+func pruneIdempotencyKeys(ctx context.Context, st *store.Store) {
+	n, err := st.PruneIdempotencyKeys(ctx, idempotencyKeyRetention, pruneBatchSize)
+	if err != nil {
+		log.Printf("prune idempotency keys: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("pruned %d idempotency keys", n)
 	}
 }
 
@@ -85,7 +126,15 @@ func processBatch(ctx context.Context, st *store.Store, batchSize int) {
 
 		if err := st.MarkRefundStatus(ctx, payload.RefundID, "refunded", externalRef); err != nil {
 			log.Printf("mark refund %d status: %v", payload.RefundID, err)
-			continue // leave outbox event unprocessed — will retry next poll, idempotently
+			// Return the claim so the retry really does happen on the next
+			// poll — without this, the claimed_at lease stamped by
+			// PollUnprocessed hides the event from every worker for a full
+			// claimLeaseTTL. Lease expiry remains the backstop if the
+			// release itself fails.
+			if rerr := st.ReleaseClaim(ctx, e.ID); rerr != nil {
+				log.Printf("release claim on outbox event %d: %v", e.ID, rerr)
+			}
+			continue // retried next poll, idempotently
 		}
 		if err := st.MarkProcessed(ctx, e.ID); err != nil {
 			log.Printf("mark outbox event %d processed: %v", e.ID, err)

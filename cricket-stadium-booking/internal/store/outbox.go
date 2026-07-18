@@ -33,17 +33,36 @@ func insertOutboxEvent(ctx context.Context, tx pgx.Tx, eventType string, booking
 	return nil
 }
 
-// PollUnprocessed returns a bounded batch (customer-pain-points.md item 3:
-// never drain everything unprocessed in one pass — that risks becoming a
-// long-running transaction that starves autovacuum, per stress-test.md
-// scenario 4b).
+// claimLeaseTTL bounds how long a claimed-but-unprocessed event stays
+// invisible to other workers. A worker that crashes mid-processing leaves its
+// claim behind; once the lease expires, another worker reclaims the event.
+// It must comfortably exceed a normal process-one-event duration.
+const claimLeaseTTL = 30 * time.Second
+
+// PollUnprocessed atomically claims a bounded batch of unprocessed events and
+// returns them. It is safe to run from multiple workers concurrently: the
+// FOR UPDATE SKIP LOCKED in the sub-select means two workers never claim the
+// same rows, so the outbox drain scales horizontally instead of being a
+// single-worker bottleneck (real-scale-topology.md). The claimed_at stamp is
+// a lease, not a completion marker — MarkProcessed still records durable
+// completion after the side effect succeeds, preserving at-least-once.
+//
+// The batch stays bounded (customer-pain-points.md item 3: never drain
+// everything in one pass — that risks a long-running transaction that starves
+// autovacuum, per stress-test.md scenario 4b).
 func (s *Store) PollUnprocessed(ctx context.Context, limit int) ([]OutboxEvent, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, event_type, booking_id, payload
-		FROM outbox_events
-		WHERE processed_at IS NULL
-		ORDER BY created_at
-		LIMIT $1`, limit)
+		UPDATE outbox_events SET claimed_at = now()
+		WHERE id IN (
+			SELECT id FROM outbox_events
+			WHERE processed_at IS NULL
+			  AND (claimed_at IS NULL OR claimed_at < now() - make_interval(secs => $2))
+			ORDER BY created_at
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, event_type, booking_id, payload`,
+		limit, claimLeaseTTL.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("poll unprocessed outbox events: %w", err)
 	}
@@ -61,6 +80,21 @@ func (s *Store) PollUnprocessed(ctx context.Context, limit int) ([]OutboxEvent, 
 		return nil, fmt.Errorf("poll unprocessed outbox events: %w", err)
 	}
 	return out, nil
+}
+
+// ReleaseClaim immediately returns a claimed-but-unprocessed event to the
+// pollable pool instead of leaving it invisible until the claim lease
+// expires. The worker calls it when a side effect fails transiently, so the
+// retry happens on the next poll (~seconds) rather than a full claimLeaseTTL
+// later. Best-effort: if this fails, lease expiry remains the backstop.
+func (s *Store) ReleaseClaim(ctx context.Context, eventID int64) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE outbox_events SET claimed_at = NULL
+		WHERE id = $1 AND processed_at IS NULL`, eventID)
+	if err != nil {
+		return fmt.Errorf("release outbox claim: %w", err)
+	}
+	return nil
 }
 
 // MarkProcessed is safe to call more than once for the same event id —

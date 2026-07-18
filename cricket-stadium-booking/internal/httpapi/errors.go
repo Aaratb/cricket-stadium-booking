@@ -18,6 +18,10 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "hold_expired"})
 	case errors.Is(err, booking.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+	case errors.Is(err, booking.ErrIdempotencyKeyReuse):
+		// 422, matching the IETF Idempotency-Key draft: the key is
+		// syntactically fine but was already used with a different request.
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "idempotency_key_reuse"})
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
 	}

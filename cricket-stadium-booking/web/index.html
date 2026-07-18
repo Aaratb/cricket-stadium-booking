@@ -2,45 +2,991 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Cricket Stadium Booking</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#07130f">
+<title>Boundary — Cricket Stadium Booking</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.3rem; }
-  #match-name { color: #555; }
-  .section { margin-bottom: 1rem; }
-  .section h3 { margin: 0.3rem 0; font-size: 0.9rem; color: #333; }
-  .seats { display: flex; flex-wrap: wrap; gap: 4px; }
-  .seat { width: 36px; height: 28px; font-size: 10px; border: 1px solid #999; border-radius: 3px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-  .seat.available { background: #d4f4d4; }
-  .seat.held-mine { background: #ffe9a8; }
-  .seat.held-other, .seat.confirmed { background: #f4a8a8; cursor: not-allowed; }
-  .seat.selected { outline: 3px solid #333; }
-  .seat:focus-visible { outline: 3px solid #2563eb; outline-offset: 1px; }
-  #panel { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; margin-top: 1rem; }
-  button { padding: 0.4rem 0.8rem; margin-right: 0.5rem; }
-  #status { color: #a00; }
+  :root {
+    color-scheme: dark;
+    --bg: #06100d;
+    --surface: rgba(14, 31, 26, 0.92);
+    --surface-strong: #10251e;
+    --line: rgba(189, 255, 218, 0.13);
+    --muted: #91aa9f;
+    --text: #f5fff9;
+    --accent: #50e3a4;
+    --accent-strong: #21c981;
+    --selected: #55a8ff;
+    --held-mine: #ffd166;
+    --held-other: #ee9b55;
+    --confirmed: #e76565;
+    --chair-width: 20px;
+    --chair-height: 22px;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+    color: var(--text);
+    background:
+      radial-gradient(circle at 16% 0%, rgba(35, 154, 104, 0.17), transparent 30rem),
+      radial-gradient(circle at 90% 20%, rgba(54, 112, 207, 0.11), transparent 34rem),
+      linear-gradient(160deg, #07130f 0%, #050b09 65%, #07100d 100%);
+  }
+
+  button, input { font: inherit; }
+  button { color: inherit; }
+
+  .topbar {
+    height: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    padding: 0 2rem;
+    border-bottom: 1px solid var(--line);
+    background: rgba(5, 15, 12, 0.78);
+    backdrop-filter: blur(18px);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+
+  .brand { display: flex; align-items: center; gap: 0.8rem; }
+  .brand-mark {
+    width: 38px;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    position: relative;
+    background: linear-gradient(145deg, #f05f5f, #a9182c);
+    box-shadow: 0 8px 24px rgba(222, 52, 75, 0.28), inset -5px -5px 10px rgba(76, 0, 13, 0.25);
+  }
+  .brand-mark::after {
+    content: "";
+    position: absolute;
+    inset: 5px 16px;
+    border-left: 2px dashed rgba(255, 241, 220, 0.9);
+    transform: rotate(24deg);
+  }
+  .brand-name { font-size: 1.08rem; font-weight: 780; letter-spacing: 0.01em; }
+  .brand-subtitle { display: block; color: var(--muted); font-size: 0.72rem; font-weight: 520; margin-top: 1px; }
+
+  .match-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.55rem 0.85rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.035);
+    color: #d9e8e1;
+    font-size: 0.8rem;
+  }
+  .live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 5px rgba(80, 227, 164, 0.1), 0 0 16px rgba(80, 227, 164, 0.7);
+  }
+
+  .page-shell {
+    width: min(1500px, 100%);
+    margin: 0 auto;
+    padding: 1.5rem 2rem 2.5rem;
+  }
+
+  .page-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: end;
+    gap: 1rem;
+    margin: 0.35rem 0 1.25rem;
+  }
+  .eyebrow {
+    margin: 0 0 0.35rem;
+    color: var(--accent);
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  h1 { margin: 0; font-size: clamp(1.55rem, 3vw, 2.35rem); letter-spacing: -0.045em; line-height: 1.05; }
+  .heading-copy { margin: 0.55rem 0 0; color: var(--muted); font-size: 0.9rem; }
+  .availability-pill {
+    flex: none;
+    display: flex;
+    align-items: baseline;
+    gap: 0.38rem;
+    padding: 0.65rem 0.85rem;
+    border: 1px solid rgba(80, 227, 164, 0.2);
+    border-radius: 12px;
+    background: rgba(80, 227, 164, 0.07);
+  }
+  #available-count { color: var(--accent); font-size: 1.1rem; font-weight: 800; }
+  .availability-pill span:last-child { color: var(--muted); font-size: 0.75rem; }
+
+  .app-tabs {
+    display: inline-flex;
+    gap: 4px;
+    margin: 0 0 1rem;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: rgba(4, 14, 10, 0.72);
+  }
+  .app-tab {
+    min-height: 34px;
+    padding: 0.4rem 0.78rem;
+    border: 0;
+    border-radius: 8px;
+    color: var(--muted);
+    background: transparent;
+    font-size: 0.74rem;
+    font-weight: 750;
+    cursor: pointer;
+  }
+  .app-tab[aria-selected="true"] { color: #ecfff6; background: rgba(80, 227, 164, 0.12); box-shadow: inset 0 0 0 1px rgba(80, 227, 164, 0.15); }
+  .tab-count { margin-left: 0.3rem; color: var(--accent); font-variant-numeric: tabular-nums; }
+
+  .booking-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 1.25rem;
+    align-items: start;
+  }
+
+  .stadium-card, .booking-panel {
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: linear-gradient(145deg, rgba(17, 37, 31, 0.94), rgba(7, 19, 15, 0.96));
+    box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
+  }
+
+  .stadium-card { overflow: hidden; }
+  .stadium-toolbar {
+    min-height: 62px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.85rem 1rem 0.85rem 1.2rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .stadium-title { margin: 0; font-size: 0.96rem; }
+  .update-copy { margin: 0.22rem 0 0; color: var(--muted); font-size: 0.72rem; }
+  .toolbar-actions { display: flex; align-items: center; gap: 0.7rem; }
+  .auto-refresh { color: #8fb7a5; font-size: 0.7rem; white-space: nowrap; }
+
+  .icon-button {
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.045);
+    cursor: pointer;
+  }
+  .icon-button:hover { border-color: rgba(80, 227, 164, 0.32); background: rgba(80, 227, 164, 0.08); }
+  .refresh-icon { display: inline-block; font-size: 1rem; transition: transform 0.45s ease; }
+  .icon-button[aria-busy="true"] .refresh-icon { animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .stadium-scroller {
+    overflow: auto;
+    padding: clamp(0.8rem, 2vw, 1.5rem);
+    scrollbar-color: rgba(80, 227, 164, 0.28) transparent;
+    perspective: 1400px;
+  }
+  .scroll-hint { display: none; }
+
+  .stadium-shell {
+    width: 100%;
+    min-width: 1080px;
+    aspect-ratio: 1.68;
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border-radius: 28px;
+    background:
+      radial-gradient(ellipse at 50% 48%, rgba(45, 110, 77, 0.14), transparent 42%),
+      linear-gradient(180deg, #0b1c17, #050d0a 82%);
+    box-shadow: inset 0 0 0 1px rgba(185, 230, 207, 0.08), inset 0 -60px 90px rgba(0,0,0,.38);
+  }
+
+  .bowl-shadow,
+  .bowl-tier,
+  .bowl-concourse {
+    position: absolute;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  .bowl-shadow {
+    inset: 7% 3.5% 8%;
+    z-index: 0;
+    background: #020705;
+    transform: translateY(24px);
+    box-shadow: 0 30px 50px rgba(0,0,0,.72), inset 0 -22px 28px #000;
+  }
+  .bowl-tier {
+    z-index: 1;
+    background: transparent;
+  }
+  .bowl-tier.upper {
+    inset: 6.5% 3.5% 12%;
+    border: 76px solid #172822;
+    box-shadow:
+      inset 0 0 0 2px #07100d,
+      inset 0 0 0 10px #263b32,
+      0 13px 0 #050b08,
+      0 22px 28px rgba(0,0,0,.5);
+  }
+  .bowl-tier.upper::before,
+  .bowl-tier.lower::before {
+    content: "";
+    position: absolute;
+    inset: -62px;
+    border: 1px solid rgba(194, 225, 210, .14);
+    border-radius: 50%;
+    background: repeating-radial-gradient(ellipse, transparent 0 15px, rgba(222,242,232,.06) 16px 17px);
+  }
+  .bowl-concourse {
+    inset: 17.5% 13% 22.5%;
+    z-index: 2;
+    border: 9px solid #52645c;
+    box-shadow: 0 5px 0 #09120e, 0 11px 16px rgba(0,0,0,.48), inset 0 2px rgba(255,255,255,.12);
+  }
+  .bowl-tier.lower {
+    inset: 21% 17% 26%;
+    border: 54px solid #14251f;
+    box-shadow: inset 0 0 0 2px #07100d, inset 0 0 0 9px #294137, 0 10px 18px rgba(0,0,0,.46);
+  }
+
+  .floodlight {
+    position: absolute;
+    width: 4.8%;
+    aspect-ratio: 1.7;
+    z-index: 12;
+    pointer-events: none;
+    border: 2px solid rgba(214, 232, 223, .42);
+    border-radius: 3px;
+    background:
+      radial-gradient(circle, #fff 0 20%, #bfffe2 22% 31%, transparent 33%) 0 0 / 25% 50%,
+      linear-gradient(#293d35, #111d18);
+    box-shadow: 0 0 20px rgba(199,255,228,.56), 0 7px 10px rgba(0,0,0,.55);
+  }
+  .floodlight::after {
+    content: "";
+    position: absolute;
+    width: 2px;
+    height: 82px;
+    left: 50%;
+    top: 100%;
+    background: linear-gradient(#899d94, rgba(60,78,70,.08));
+  }
+  .floodlight.nw { top: 5%; left: 7%; transform: rotate(-10deg); }
+  .floodlight.ne { top: 5%; right: 7%; transform: rotate(10deg); }
+  .floodlight.sw { bottom: 7%; left: 7%; transform: rotate(190deg); }
+  .floodlight.se { bottom: 7%; right: 7%; transform: rotate(170deg); }
+
+  .field {
+    position: absolute;
+    inset: 31% 25%;
+    z-index: 4;
+    overflow: hidden;
+    border: 4px solid #f2ead0;
+    border-radius: 50%;
+    background:
+      repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 10%, rgba(0,0,0,.035) 10% 20%),
+      radial-gradient(ellipse at center, #56aa58 0 24%, #3b9148 25% 50%, #2d7b40 51% 72%, #206434 100%);
+    box-shadow: 0 0 0 4px #b63d3d, 0 0 0 7px #f2ead0, 0 14px 25px rgba(0,0,0,.5), inset 0 0 36px rgba(0,0,0,.18);
+  }
+  .field::before {
+    content: "";
+    position: absolute;
+    inset: 19% 23%;
+    border: 2px dashed rgba(246,248,222,.62);
+    border-radius: 50%;
+  }
+  .field::after {
+    content: "";
+    position: absolute;
+    inset: 5%;
+    border: 1px solid rgba(235,255,231,.19);
+    border-radius: 50%;
+  }
+  .pitch {
+    position: absolute;
+    width: 11%;
+    height: 62%;
+    left: 44.5%;
+    top: 19%;
+    border-radius: 3px;
+    background:
+      linear-gradient(to bottom, transparent 9%, #fff 9% 10.5%, transparent 10.5% 15%, rgba(255,255,255,.8) 15% 16%, transparent 16% 84%, rgba(255,255,255,.8) 84% 85%, transparent 85% 89.5%, #fff 89.5% 91%, transparent 91%),
+      repeating-linear-gradient(90deg, rgba(86,59,27,.14) 0 24%, rgba(255,255,255,.025) 24% 48%),
+      linear-gradient(90deg, #b99a61, #d1b77a 50%, #b99a61);
+    box-shadow: 0 5px 13px rgba(0,0,0,.28), inset 0 0 0 1px rgba(255,255,255,.16);
+  }
+  .pitch::before,
+  .pitch::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    width: 19%;
+    height: 7%;
+    transform: translateX(-50%);
+    border-left: 2px solid #f8efd8;
+    border-right: 2px solid #f8efd8;
+    box-shadow: inset 0 0 0 1px rgba(248,239,216,.9);
+  }
+  .pitch::before { top: 2%; }
+  .pitch::after { bottom: 2%; }
+
+  .stand,
+  .stand-deck,
+  .seat-tier,
+  .seats { display: contents; }
+  .stand-canopy,
+  .tier-caption,
+  .stand-podium { display: none; }
+
+  .stand-label {
+    position: absolute;
+    z-index: 11;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 9px;
+    border: 1px solid rgba(175,211,193,.22);
+    border-radius: 999px;
+    color: #edf8f2;
+    background: rgba(3,10,7,.9);
+    box-shadow: 0 5px 12px rgba(0,0,0,.45);
+    font-size: 9px;
+    font-weight: 850;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+  .stand-label span { color: #8ca79b; font-size: 7px; letter-spacing: 0; }
+  .label-north { top: 4.5%; left: 50%; transform: translateX(-50%); }
+  .label-south { bottom: 6.5%; left: 50%; transform: translateX(-50%); }
+  .label-west { left: 3.5%; top: 48%; transform: translateY(-50%) rotate(-90deg); }
+  .label-east { right: 3.5%; top: 48%; transform: translateY(-50%) rotate(90deg); }
+
+  .seat {
+    --chair-color: #3fc791;
+    --chair-dark: #166d4d;
+    --seat-scale: 1;
+    appearance: none;
+    position: absolute;
+    z-index: var(--seat-layer, 7);
+    left: var(--seat-x, 50%);
+    top: var(--seat-y, 50%);
+    width: 22px;
+    height: 24px;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    outline: 0;
+    color: transparent;
+    background: transparent;
+    font-size: 0;
+    cursor: pointer;
+    transform: translate(-50%, -50%) rotate(var(--seat-angle, 0deg)) scale(var(--seat-scale));
+    filter: drop-shadow(0 2px 1px rgba(0,0,0,.62));
+    transition: transform 130ms ease, filter 130ms ease;
+  }
+  .seat::before {
+    content: "";
+    position: absolute;
+    width: 60%;
+    height: 56%;
+    left: 20%;
+    top: 1%;
+    border: 1px solid rgba(255,255,255,.34);
+    border-radius: 4px 4px 2px 2px;
+    background: linear-gradient(145deg, color-mix(in srgb, var(--chair-color), white 18%), var(--chair-color) 48%, var(--chair-dark));
+    box-shadow: inset 0 1px rgba(255,255,255,.32), 0 2px 0 var(--chair-dark);
+  }
+  .seat::after {
+    content: "";
+    position: absolute;
+    width: 72%;
+    height: 30%;
+    left: 14%;
+    bottom: 3%;
+    border: 1px solid rgba(255,255,255,.23);
+    border-radius: 2px 2px 5px 5px;
+    background: linear-gradient(var(--chair-color), var(--chair-dark));
+    box-shadow: 0 3px 0 rgba(1,5,3,.65);
+    transform: perspective(25px) rotateX(40deg);
+    transform-origin: top;
+  }
+  .seat-number {
+    position: absolute;
+    z-index: 3;
+    top: 3px;
+    left: 50%;
+    width: 18px;
+    color: rgba(247, 255, 251, 0.96);
+    font: 800 5px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+    pointer-events: none;
+    transform: translateX(-50%) rotate(var(--seat-number-angle, 0deg));
+    transform-origin: center;
+  }
+  .seat[data-bowl-row="1"] {
+    width: 18px;
+    height: 21px;
+  }
+  .seat[data-bowl-row="1"]::before {
+    width: 58%;
+    left: 21%;
+  }
+  .seat[data-bowl-row="1"]::after {
+    width: 68%;
+    left: 16%;
+  }
+  .seat[data-bowl-row="1"] .seat-number {
+    width: 15px;
+    font-size: 4.8px;
+  }
+  .seat.available:hover { --seat-scale: 1.36; z-index: 20; filter: drop-shadow(0 5px 4px rgba(0,0,0,.72)) brightness(1.15); }
+  .seat.held-mine { --chair-color: var(--held-mine); --chair-dark: #9c7015; }
+  .seat.held-other { --chair-color: var(--held-other); --chair-dark: #934718; cursor: not-allowed; opacity: .82; }
+  .seat.confirmed { --chair-color: var(--confirmed); --chair-dark: #842727; cursor: not-allowed; opacity: .74; }
+  .seat.confirmed.owned-confirmed {
+    cursor: pointer;
+    opacity: 1;
+    filter: drop-shadow(0 0 5px rgba(255, 231, 160, 0.65)) drop-shadow(0 3px 2px rgba(0,0,0,.72));
+  }
+  .seat.confirmed.owned-confirmed::before { outline: 2px solid #ffe7a0; outline-offset: 2px; }
+  .seat.confirmed.owned-confirmed:hover { --seat-scale: 1.36; z-index: 20; filter: drop-shadow(0 0 8px rgba(255, 231, 160, 0.78)) brightness(1.1); }
+  .seat.selected { --seat-scale: 1.48; z-index: 22; filter: drop-shadow(0 0 6px var(--selected)) drop-shadow(0 5px 3px rgba(0,0,0,.75)); }
+  .seat.selected::before { outline: 2px solid #8bc9ff; outline-offset: 2px; }
+  .seat:focus-visible::before { outline: 2px solid #fff; outline-offset: 2px; }
+  .seat:disabled { pointer-events: none; }
+
+  .sight-screen {
+    position: absolute;
+    z-index: 6;
+    width: 7%;
+    height: 3.2%;
+    left: 46.5%;
+    border: 1px solid rgba(255,255,255,.65);
+    background: repeating-linear-gradient(90deg, #f0eee4 0 10%, #c9c8bf 10% 11%);
+    box-shadow: 0 4px 7px rgba(0,0,0,.44);
+  }
+  .sight-screen.north { top: 28.5%; }
+  .sight-screen.south { bottom: 27.5%; }
+  .scoreboard {
+    position: absolute;
+    z-index: 10;
+    width: 9%;
+    min-width: 70px;
+    padding: 5px 3px;
+    border: 2px solid #394941;
+    border-radius: 4px;
+    color: #81ffb9;
+    background: #020705;
+    box-shadow: 0 5px 10px rgba(0,0,0,.58), inset 0 0 7px rgba(63,199,145,.12);
+    font: 6px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-align: center;
+    letter-spacing: .08em;
+  }
+  .scoreboard.west { left: 15%; top: 17%; transform: rotate(-10deg); }
+  .scoreboard.east { right: 15%; bottom: 18%; transform: rotate(-10deg); }
+
+  .booking-panel {
+    position: sticky;
+    top: 96px;
+    overflow: hidden;
+  }
+  .panel-header { padding: 1.15rem 1.2rem; border-bottom: 1px solid var(--line); }
+  .panel-header h2 { margin: 0; font-size: 1rem; }
+  .panel-header p { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.75rem; }
+  .panel-body { padding: 1.15rem 1.2rem 1.3rem; }
+
+  .field-label { display: block; margin-bottom: 0.45rem; color: #b9cdc4; font-size: 0.72rem; font-weight: 720; }
+  .buyer-input {
+    width: 100%;
+    height: 42px;
+    padding: 0 0.8rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    outline: none;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.045);
+  }
+  .buyer-input:focus { border-color: rgba(80, 227, 164, 0.65); box-shadow: 0 0 0 3px rgba(80, 227, 164, 0.1); }
+  .buyer-input:disabled { opacity: 0.58; cursor: not-allowed; }
+
+  .selection-card {
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: 0.75rem;
+    align-items: center;
+    margin: 1rem 0;
+    padding: 0.85rem;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+  .ticket-icon {
+    width: 42px;
+    aspect-ratio: 1;
+    display: grid;
+    place-items: center;
+    border-radius: 11px;
+    color: var(--accent);
+    background: rgba(80, 227, 164, 0.1);
+    font-size: 1.15rem;
+  }
+  .selection-kicker { display: block; color: var(--muted); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.09em; }
+  #selection { display: block; margin-top: 0.16rem; font-size: 0.94rem; }
+  #selection-hint { margin: 0.18rem 0 0; color: var(--muted); font-size: 0.68rem; }
+
+  .primary-button, .secondary-button, .danger-button {
+    width: 100%;
+    min-height: 44px;
+    border-radius: 11px;
+    font-weight: 780;
+    cursor: pointer;
+    transition: transform 120ms ease, filter 120ms ease, opacity 120ms ease;
+  }
+  .primary-button { border: 0; color: #032516; background: linear-gradient(135deg, #62efb1, #2ed48d); box-shadow: 0 8px 24px rgba(46, 212, 141, 0.18); }
+  .primary-button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.05); }
+  .secondary-button { border: 1px solid rgba(80, 227, 164, 0.28); color: #a6f8d2; background: rgba(80, 227, 164, 0.08); }
+  .danger-button { border: 1px solid rgba(231, 101, 101, 0.25); color: #ffaaaa; background: rgba(231, 101, 101, 0.07); }
+  .primary-button:disabled,
+  .secondary-button:disabled,
+  .danger-button:disabled,
+  .icon-button:disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
+    transform: none !important;
+  }
+
+  .hold-panel {
+    margin-top: 0.9rem;
+    padding: 0.9rem;
+    border: 1px solid rgba(255, 209, 102, 0.22);
+    border-radius: 12px;
+    background: rgba(255, 209, 102, 0.06);
+  }
+  .hold-meta { display: flex; align-items: center; justify-content: space-between; gap: 0.8rem; margin-bottom: 0.8rem; }
+  .hold-meta span:first-child { color: #dec98f; font-size: 0.72rem; }
+  #hold-seat { display: block; color: #fff0bd; font-size: 0.9rem; font-weight: 780; margin-top: 0.12rem; }
+  .timer { flex: none; padding: 0.38rem 0.52rem; border-radius: 8px; color: #2c2100; background: var(--held-mine); font-variant-numeric: tabular-nums; font-weight: 850; font-size: 0.82rem; }
+  .hold-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; }
+
+  .refund-tracker {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+  }
+  .refund-tracker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.65rem;
+  }
+  .refund-tracker-header h3 { margin: 0; font-size: 0.82rem; }
+  .refund-tracker-header span { color: var(--muted); font-size: 0.62rem; }
+  .refund-tracker-list { display: grid; gap: 0.45rem; }
+  .refund-tracker-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem;
+    padding: 0.6rem 0.65rem;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .refund-tracker-seat { font-size: 0.72rem; font-weight: 780; }
+  .text-button {
+    padding: 0;
+    border: 0;
+    color: #94cdb2;
+    background: transparent;
+    font-size: 0.68rem;
+    cursor: pointer;
+  }
+  .text-button:hover { color: var(--accent); }
+  .bookings-empty {
+    margin: 0;
+    padding: 0.75rem;
+    border: 1px dashed rgba(184, 218, 202, 0.15);
+    border-radius: 10px;
+    color: var(--muted);
+    font-size: 0.7rem;
+    line-height: 1.4;
+  }
+  .bookings-list { display: grid; gap: 0.6rem; }
+  .bookings-page {
+    padding: 1.2rem;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: linear-gradient(145deg, rgba(17, 37, 31, 0.94), rgba(7, 19, 15, 0.96));
+    box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
+  }
+  .bookings-page-header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .bookings-page h2 { margin: 0; font-size: 1.1rem; }
+  .bookings-page-copy { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.73rem; }
+  .bookings-page-actions { display: flex; align-items: center; gap: 0.8rem; }
+  .bookings-page .bookings-list { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .booking-record {
+    padding: 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+  .booking-record-top,
+  .booking-record-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem;
+  }
+  .booking-seat { font-size: 0.86rem; }
+  .booking-meta { margin: 0.22rem 0 0.65rem; color: var(--muted); font-size: 0.62rem; }
+  .status-badge {
+    flex: none;
+    padding: 0.22rem 0.42rem;
+    border-radius: 999px;
+    font-size: 0.56rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .status-badge.confirmed { color: #aaf3d1; background: rgba(80, 227, 164, 0.11); }
+  .status-badge.cancelled { color: #ffc3c3; background: rgba(231, 101, 101, 0.11); }
+  .refund-status { color: #c8dbd2; font-size: 0.64rem; }
+  .refund-status::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 5px;
+    border-radius: 50%;
+    background: var(--held-mine);
+    box-shadow: 0 0 8px rgba(255, 209, 102, 0.34);
+  }
+  .refund-status.refunded::before { background: var(--accent); box-shadow: 0 0 8px rgba(80, 227, 164, 0.4); }
+  .cancel-booking-button {
+    padding: 0.36rem 0.52rem;
+    border: 1px solid rgba(231, 101, 101, 0.24);
+    border-radius: 8px;
+    color: #ffb1b1;
+    background: rgba(231, 101, 101, 0.07);
+    font-size: 0.64rem;
+    font-weight: 750;
+    cursor: pointer;
+  }
+  .cancel-booking-button:hover { border-color: rgba(231, 101, 101, 0.48); background: rgba(231, 101, 101, 0.12); }
+  .cancel-booking-button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .cancel-dialog {
+    width: min(420px, calc(100vw - 2rem));
+    padding: 0;
+    border: 1px solid rgba(205, 230, 218, 0.18);
+    border-radius: 16px;
+    color: var(--text);
+    background: #0d211a;
+    box-shadow: 0 28px 90px rgba(0, 0, 0, 0.68);
+  }
+  .cancel-dialog::backdrop { background: rgba(1, 7, 5, 0.76); backdrop-filter: blur(5px); }
+  .cancel-dialog-body { padding: 1.2rem; }
+  .cancel-dialog h2 { margin: 0; font-size: 1rem; }
+  .cancel-dialog p { margin: 0.55rem 0 0; color: var(--muted); font-size: 0.76rem; line-height: 1.5; }
+  .cancel-dialog strong { color: #fff; }
+  .cancel-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-top: 1rem; }
+
+  #status,
+  #bookings-status {
+    min-height: 0;
+    margin-top: 0.8rem;
+    padding: 0;
+    border-radius: 9px;
+    color: #ffb1b1;
+    font-size: 0.75rem;
+    line-height: 1.4;
+  }
+  #status:not(:empty),
+  #bookings-status:not(:empty) { padding: 0.65rem 0.7rem; background: rgba(231, 101, 101, 0.08); border: 1px solid rgba(231, 101, 101, 0.15); }
+  #status[data-tone="success"],
+  #bookings-status[data-tone="success"] { color: #a9f3cf; background: rgba(80, 227, 164, 0.08); border-color: rgba(80, 227, 164, 0.15); }
+
+  .legend {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem 0.7rem;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 0.68rem;
+  }
+  .legend-item { display: flex; align-items: center; gap: 0.42rem; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 3px; box-shadow: 0 1px 0 rgba(0,0,0,.45); }
+  .legend-swatch.available { background: #3fc791; }
+  .legend-swatch.selected { background: #3fc791; outline: 2px solid var(--selected); }
+  .legend-swatch.held { background: var(--held-other); }
+  .legend-swatch.confirmed { background: var(--confirmed); outline: 1px solid #ffe7a0; outline-offset: 1px; }
+
+  @media (max-width: 1050px) {
+    .booking-layout { grid-template-columns: 1fr; }
+    .booking-panel { position: static; }
+    .panel-body { display: grid; grid-template-columns: minmax(220px, 0.8fr) minmax(280px, 1.2fr); gap: 0 1.2rem; }
+    .panel-main { grid-row: span 3; }
+    .legend { align-self: end; }
+  }
+
+  @media (max-width: 700px) {
+    .topbar { height: 64px; padding: 0 1rem; }
+    .brand-subtitle, .match-chip span:last-child { display: none; }
+    .match-chip { padding: 0.5rem; }
+    .page-shell { padding: 1rem 0.75rem 2rem; }
+    .page-heading { align-items: start; }
+    .availability-pill { padding: 0.5rem 0.65rem; }
+    .stadium-toolbar { align-items: start; }
+    .toolbar-actions { flex-direction: column-reverse; align-items: end; gap: 0.35rem; }
+    .stadium-scroller { padding: 0.65rem; }
+    .scroll-hint {
+      display: block;
+      position: sticky;
+      left: 0;
+      z-index: 12;
+      width: max-content;
+      margin: 0 auto 0.55rem;
+      padding: 0.35rem 0.6rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: #b7cfc4;
+      background: rgba(7, 22, 17, 0.86);
+      font-size: 0.68rem;
+      backdrop-filter: blur(8px);
+    }
+    .panel-body { display: block; }
+    .booking-panel { border-radius: 18px; }
+    .bookings-page-header { align-items: start; flex-direction: column; }
+    .bookings-page-actions { width: 100%; justify-content: space-between; }
+    .bookings-page .bookings-list { grid-template-columns: 1fr; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+    .stadium-shell { transform: none; }
+  }
 </style>
 </head>
 <body>
-  <h1>Cricket Stadium Booking</h1>
-  <div id="match-name">Match: <span id="match-id-label"></span></div>
-
-  <div id="panel">
-    <label for="buyer-id">Your buyer ID: <input id="buyer-id" value="fan@example.com"></label>
-    <div id="status" role="status" aria-live="polite"></div>
-  </div>
-
-  <div id="seat-grid"></div>
-
-  <div id="panel">
-    <div id="selection">Selected: none</div>
-    <button id="btn-hold" disabled>Hold Seat</button>
-    <div id="hold-panel" style="display:none">
-      <div role="status" aria-live="polite">Active hold: <span id="hold-seat"></span> expires in <span id="countdown"></span></div>
-      <button id="btn-confirm">Confirm Booking</button>
-      <button id="btn-release">Release Hold</button>
+  <header class="topbar">
+    <div class="brand" aria-label="Boundary stadium booking">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Boundary<span class="brand-subtitle">Cricket experiences</span></span>
     </div>
-  </div>
+    <div class="match-chip"><span class="live-dot" aria-hidden="true"></span><span>Booking open</span><strong id="match-id-label"></strong></div>
+  </header>
+
+  <main class="page-shell">
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">India vs Australia</p>
+        <h1>Choose your view of the final</h1>
+        <p class="heading-copy">Select a seat from any stand. Your choice is held securely before confirmation.</p>
+      </div>
+      <div class="availability-pill" aria-live="polite"><strong id="available-count">—</strong><span>available</span></div>
+    </div>
+
+    <nav class="app-tabs" role="tablist" aria-label="Booking views">
+      <button class="app-tab" id="tab-seat-map" type="button" role="tab" aria-selected="true" aria-controls="seat-map-view">Seat map</button>
+      <button class="app-tab" id="tab-my-bookings" type="button" role="tab" aria-selected="false" aria-controls="my-bookings-view">My bookings <span class="tab-count" id="bookings-count">0</span></button>
+    </nav>
+
+    <section id="seat-map-view" role="tabpanel" aria-labelledby="tab-seat-map">
+    <div class="booking-layout">
+      <section class="stadium-card" aria-labelledby="stadium-title">
+        <div class="stadium-toolbar">
+          <div>
+            <h2 class="stadium-title" id="stadium-title">Boundary National Stadium</h2>
+            <p class="update-copy">Last updated <span id="last-updated">loading…</span></p>
+          </div>
+          <div class="toolbar-actions">
+            <span class="auto-refresh">Auto-refresh · 10 sec</span>
+            <button class="icon-button" id="btn-refresh" type="button" aria-label="Refresh seat availability">
+              <span class="refresh-icon" aria-hidden="true">↻</span><span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="stadium-scroller" aria-label="Scrollable stadium seat map">
+          <div class="scroll-hint" aria-hidden="true">↔ Swipe to explore every stand</div>
+          <div class="stadium-shell" id="stadium">
+            <span class="floodlight nw" aria-hidden="true"></span>
+            <span class="floodlight ne" aria-hidden="true"></span>
+            <span class="floodlight sw" aria-hidden="true"></span>
+            <span class="floodlight se" aria-hidden="true"></span>
+
+            <div class="bowl-shadow" aria-hidden="true"></div>
+            <div class="bowl-tier upper" aria-hidden="true"></div>
+            <div class="bowl-concourse" aria-hidden="true"></div>
+            <div class="bowl-tier lower" aria-hidden="true"></div>
+
+            <div class="stand-label label-north">North <span id="count-NORTH">0 seats</span></div>
+            <div class="stand stand-north">
+              <span class="stand-canopy" aria-hidden="true"></span>
+              <div class="stand-deck">
+                <div class="seat-tier tier-upper"><span class="tier-caption">Upper tier</span><div class="seats seats-tier" id="seats-NORTH-upper" role="group" aria-label="North upper tier seats"></div></div>
+                <div class="stand-podium">Members Pavilion</div>
+                <div class="seat-tier tier-lower"><span class="tier-caption">Lower tier</span><div class="seats seats-tier" id="seats-NORTH-lower" role="group" aria-label="North lower tier seats"></div></div>
+              </div>
+            </div>
+
+            <div class="stand-label label-south">South <span id="count-SOUTH">0 seats</span></div>
+            <div class="stand stand-south">
+              <span class="stand-canopy" aria-hidden="true"></span>
+              <div class="stand-deck">
+                <div class="seat-tier tier-upper"><span class="tier-caption">Upper tier</span><div class="seats seats-tier" id="seats-SOUTH-upper" role="group" aria-label="South upper tier seats"></div></div>
+                <div class="stand-podium">Media Pavilion</div>
+                <div class="seat-tier tier-lower"><span class="tier-caption">Lower tier</span><div class="seats seats-tier" id="seats-SOUTH-lower" role="group" aria-label="South lower tier seats"></div></div>
+              </div>
+            </div>
+
+            <div class="stand-label label-west">West <span id="count-WEST">0 seats</span></div>
+            <div class="stand stand-west">
+              <span class="stand-canopy" aria-hidden="true"></span>
+              <div class="stand-deck">
+                <div class="seat-tier tier-upper"><span class="tier-caption">Upper tier</span><div class="seats seats-tier" id="seats-WEST-upper" role="group" aria-label="West upper tier seats"></div></div>
+                <div class="stand-podium">West Grandstand</div>
+                <div class="seat-tier tier-lower"><span class="tier-caption">Lower tier</span><div class="seats seats-tier" id="seats-WEST-lower" role="group" aria-label="West lower tier seats"></div></div>
+              </div>
+            </div>
+
+            <div class="stand-label label-east">East <span id="count-EAST">0 seats</span></div>
+            <div class="stand stand-east">
+              <span class="stand-canopy" aria-hidden="true"></span>
+              <div class="stand-deck">
+                <div class="seat-tier tier-upper"><span class="tier-caption">Upper tier</span><div class="seats seats-tier" id="seats-EAST-upper" role="group" aria-label="East upper tier seats"></div></div>
+                <div class="stand-podium">East Terrace</div>
+                <div class="seat-tier tier-lower"><span class="tier-caption">Lower tier</span><div class="seats seats-tier" id="seats-EAST-lower" role="group" aria-label="East lower tier seats"></div></div>
+              </div>
+            </div>
+
+            <div class="field" aria-hidden="true"><div class="pitch"></div></div>
+            <span class="sight-screen north" aria-hidden="true"></span>
+            <span class="sight-screen south" aria-hidden="true"></span>
+            <span class="scoreboard west" aria-hidden="true">FINAL · M1<br>BOOKING OPEN</span>
+            <span class="scoreboard east" aria-hidden="true">BOUNDARY<br>NATIONAL</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="booking-panel" aria-labelledby="booking-title">
+        <div class="panel-header">
+          <h2 id="booking-title">Your booking</h2>
+          <p>One active hold per buyer for this match</p>
+        </div>
+        <div class="panel-body">
+          <div class="panel-main">
+            <label class="field-label" for="buyer-id">Buyer ID</label>
+            <input class="buyer-input" id="buyer-id" value="fan@example.com" autocomplete="email">
+
+            <div class="selection-card">
+              <span class="ticket-icon" aria-hidden="true">◫</span>
+              <div>
+                <span class="selection-kicker">Selected seat</span>
+                <strong id="selection">None yet</strong>
+                <p id="selection-hint">Choose a green seat from the stadium</p>
+              </div>
+            </div>
+
+            <button class="primary-button" id="btn-hold" disabled>Hold selected seat</button>
+
+            <div class="hold-panel" id="hold-panel" hidden>
+              <div class="hold-meta" role="status" aria-live="polite">
+                <span>Active hold<strong id="hold-seat"></strong></span>
+                <span class="timer" id="countdown">00:00</span>
+              </div>
+              <div class="hold-actions">
+                <button class="secondary-button" id="btn-confirm">Confirm</button>
+                <button class="danger-button" id="btn-release">Release</button>
+              </div>
+            </div>
+
+            <section class="refund-tracker" id="refund-tracker" aria-labelledby="refund-tracker-title" hidden>
+              <div class="refund-tracker-header">
+                <h3 id="refund-tracker-title">Refund status</h3>
+                <span>Updates automatically</span>
+              </div>
+              <div class="refund-tracker-list" id="refund-tracker-list" aria-live="polite"></div>
+            </section>
+
+            <div id="status" role="status" aria-live="polite"></div>
+          </div>
+
+          <div class="legend" aria-label="Seat status legend">
+            <span class="legend-item"><span class="legend-swatch available"></span>Available</span>
+            <span class="legend-item"><span class="legend-swatch selected"></span>Selected</span>
+            <span class="legend-item"><span class="legend-swatch held"></span>On hold</span>
+            <span class="legend-item"><span class="legend-swatch confirmed"></span>Confirmed · yours outlined</span>
+          </div>
+        </div>
+      </aside>
+    </div>
+    </section>
+
+    <section class="bookings-page" id="my-bookings-view" role="tabpanel" aria-labelledby="tab-my-bookings" hidden>
+      <div class="bookings-page-header">
+        <div>
+          <p class="eyebrow">Your tickets</p>
+          <h2 id="my-bookings-title">My bookings</h2>
+          <p class="bookings-page-copy">Bookings for <strong id="bookings-buyer">fan@example.com</strong></p>
+        </div>
+        <div class="bookings-page-actions">
+          <button class="text-button" id="btn-change-buyer" type="button">Change buyer</button>
+          <button class="icon-button" id="btn-refresh-bookings" type="button" aria-label="Refresh booking and refund status">
+            <span class="refresh-icon" aria-hidden="true">↻</span><span>Refresh</span>
+          </button>
+        </div>
+      </div>
+      <p class="bookings-empty" id="bookings-empty">No confirmed or cancelled bookings for this buyer yet.</p>
+      <div class="bookings-list" id="bookings-list" aria-live="polite"></div>
+      <div id="bookings-status" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <dialog class="cancel-dialog" id="cancel-dialog" aria-labelledby="cancel-dialog-title">
+    <div class="cancel-dialog-body">
+      <h2 id="cancel-dialog-title">Cancel this booking?</h2>
+      <p><strong id="cancel-dialog-seat"></strong> will become available immediately. A refund request will be created and processed asynchronously.</p>
+      <div class="cancel-dialog-actions">
+        <button class="secondary-button" id="btn-cancel-dismiss" type="button">Keep booking</button>
+        <button class="danger-button" id="btn-cancel-confirm" type="button">Cancel booking</button>
+      </div>
+    </div>
+  </dialog>
 
   <script src="/app.js"></script>
 </body>

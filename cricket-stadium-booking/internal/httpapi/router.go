@@ -18,6 +18,7 @@ func NewServer(service *booking.Service, rateLimitEnabled bool) http.Handler {
 	mux.HandleFunc("POST /holds/{holdId}/confirm", s.handleConfirm)
 	mux.HandleFunc("DELETE /holds/{holdId}", s.handleRelease)
 	mux.HandleFunc("GET /matches/{matchId}/seats", s.handleListSeats)
+	mux.HandleFunc("GET /matches/{matchId}/bookings", s.handleListBookings)
 	mux.HandleFunc("POST /bookings/{bookingId}/cancel", s.handleCancel)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /app.js", s.handleAppJS)

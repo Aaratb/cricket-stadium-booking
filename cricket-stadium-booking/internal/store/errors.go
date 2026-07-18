@@ -9,6 +9,12 @@ var (
 	ErrSeatUnavailable = errors.New("seat unavailable")
 	ErrHoldExpired     = errors.New("hold expired or already resolved")
 	ErrNotFound        = errors.New("not found")
+	// ErrIdempotencyKeyReuse: an Idempotency-Key was presented with different
+	// request parameters (match/seat/buyer) than the request that first used
+	// it. Standard Idempotency-Key semantics reject this as a client error —
+	// silently replaying the original booking would hand one request another
+	// request's data.
+	ErrIdempotencyKeyReuse = errors.New("idempotency key reused with different request parameters")
 )
 
 const uniqueViolationCode = "23505"

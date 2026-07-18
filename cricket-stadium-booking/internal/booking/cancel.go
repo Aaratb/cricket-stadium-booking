@@ -9,11 +9,18 @@ func (svc *Service) CancelBooking(ctx context.Context, bookingID int64, buyerID 
 	ctx, cancel := svc.withDeadline(ctx)
 	defer cancel()
 
-	return withRetry(ctx, svc.maxRetries, func() (Booking, error) {
+	b, err := withRetry(ctx, svc.maxRetries, func() (Booking, error) {
 		r, err := svc.store.CancelBooking(ctx, bookingID, buyerID)
 		if err != nil {
 			return Booking{}, err
 		}
-		return Booking{ID: r.ID, SeatID: r.SeatID, Status: r.Status}, nil
+		return Booking{ID: r.ID, MatchID: r.MatchID, SeatID: r.SeatID, Status: r.Status}, nil
 	})
+	if err == nil {
+		// The cancelled seat is available again; drop the cached seat map so
+		// the next read reflects it (same contract as placeHold's
+		// invalidation).
+		svc.seatCache.invalidate(b.MatchID)
+	}
+	return b, err
 }

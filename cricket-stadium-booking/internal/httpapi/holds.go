@@ -17,7 +17,15 @@ func (s *Server) handleHold(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hold, err := s.service.PlaceHold(r.Context(), matchID, seatID, req.BuyerID)
+	// Optional idempotency: an absent header is the empty string, which the
+	// service treats exactly as the non-idempotent path (unchanged behavior).
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if !validIdempotencyKey(idempotencyKey) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid idempotency key"})
+		return
+	}
+
+	hold, err := s.service.PlaceHoldWithKey(r.Context(), matchID, seatID, req.BuyerID, idempotencyKey)
 	observability.LogTransition(r.Context(), "hold", matchID, seatID, start, err)
 	if err != nil {
 		writeError(w, err)

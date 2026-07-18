@@ -4,30 +4,69 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
 
+const (
+	// An entry idle longer than limiterIdleTTL is evicted; the janitor runs
+	// every limiterSweepInterval. Without eviction the map grows one entry per
+	// distinct client IP forever — an unbounded memory leak under a flood of
+	// spoofed/rotating source IPs, which is exactly the abuse this limiter
+	// exists to blunt.
+	limiterIdleTTL       = 10 * time.Minute
+	limiterSweepInterval = time.Minute
+)
+
+type limiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
 type ipRateLimiter struct {
 	mu       sync.Mutex
-	limiters map[string]*rate.Limiter
+	limiters map[string]*limiterEntry
 	r        rate.Limit
 	b        int
 }
 
 func newIPRateLimiter(r rate.Limit, b int) *ipRateLimiter {
-	return &ipRateLimiter{limiters: make(map[string]*rate.Limiter), r: r, b: b}
+	l := &ipRateLimiter{limiters: make(map[string]*limiterEntry), r: r, b: b}
+	go l.cleanupLoop()
+	return l
 }
 
 func (l *ipRateLimiter) allow(ip string) bool {
+	now := time.Now()
 	l.mu.Lock()
-	lim, ok := l.limiters[ip]
+	e, ok := l.limiters[ip]
 	if !ok {
-		lim = rate.NewLimiter(l.r, l.b)
-		l.limiters[ip] = lim
+		e = &limiterEntry{limiter: rate.NewLimiter(l.r, l.b)}
+		l.limiters[ip] = e
 	}
+	e.lastSeen = now
 	l.mu.Unlock()
-	return lim.Allow()
+	return e.limiter.Allow()
+}
+
+// cleanupLoop evicts entries whose last request is older than limiterIdleTTL.
+// It runs for the life of the process (the limiter is created once at startup);
+// a full-token idle limiter carries no rate-limiting state worth preserving, so
+// dropping and lazily recreating it is safe.
+func (l *ipRateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(limiterSweepInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		cutoff := time.Now().Add(-limiterIdleTTL)
+		l.mu.Lock()
+		for ip, e := range l.limiters {
+			if e.lastSeen.Before(cutoff) {
+				delete(l.limiters, ip)
+			}
+		}
+		l.mu.Unlock()
+	}
 }
 
 // rateLimitMiddleware caps mutating requests per client IP (CODE_REVIEW.md

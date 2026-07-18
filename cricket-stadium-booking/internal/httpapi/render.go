@@ -11,8 +11,9 @@ type buyerRequest struct {
 }
 
 const (
-	maxRequestBodyBytes = 1 << 16 // 64KiB — every request body here is a few short fields
-	maxBuyerIDLen       = 255
+	maxRequestBodyBytes  = 1 << 16 // 64KiB — every request body here is a few short fields
+	maxBuyerIDLen        = 255
+	maxIdempotencyKeyLen = 255
 )
 
 // parseIDAndBuyer is the shared "path param + buyer_id body" pattern used
@@ -35,6 +36,12 @@ func parseIDAndBuyer(w http.ResponseWriter, r *http.Request, pathParam string) (
 
 func validBuyerID(id string) bool {
 	return id != "" && len(id) <= maxBuyerIDLen
+}
+
+// validIdempotencyKey allows the empty string (the header was absent, meaning
+// no idempotency requested) but rejects an over-long key.
+func validIdempotencyKey(key string) bool {
+	return len(key) <= maxIdempotencyKeyLen
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
